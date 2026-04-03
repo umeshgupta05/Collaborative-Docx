@@ -8,6 +8,7 @@ import DocumentList from "@/components/DocumentList";
 import { Input } from "@/components/ui/input";
 import FolderCodeDialog from "@/components/FolderCodeDialog";
 import {
+  CheckCircle2,
   Upload,
   Plus,
   LogOut,
@@ -16,8 +17,10 @@ import {
   FolderPlus,
   FolderOpen,
   ArrowLeft,
+  Loader2,
+  XCircle,
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import type { Tables } from "@/integrations/supabase/types";
 import SEO from "@/components/SEO";
 import { importDocumentFile } from "@/utils/document-import";
@@ -31,7 +34,19 @@ const Dashboard = () => {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [userName, setUserName] = useState("");
+  const [currentUserId, setCurrentUserId] = useState<string>("");
   const [viewMode, setViewMode] = useState<"active" | "trash">("active");
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [moveFx, setMoveFx] = useState<{
+    visible: boolean;
+    phase: "moving" | "success" | "error";
+    message: string;
+  }>({
+    visible: false,
+    phase: "moving",
+    message: "",
+  });
+  const moveFxTimerRef = useRef<number | null>(null);
 
   const selectedFolder = searchParams.get("folder") || "__unfiled__";
   const setSelectedFolder = useCallback(
@@ -54,6 +69,90 @@ const Dashboard = () => {
   const [newFolderName, setNewFolderName] = useState("");
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
+  const clearMoveFxTimer = () => {
+    if (moveFxTimerRef.current) {
+      window.clearTimeout(moveFxTimerRef.current);
+      moveFxTimerRef.current = null;
+    }
+  };
+
+  const finishMoveFx = (
+    phase: "success" | "error",
+    message: string,
+    hideAfterMs = 1200,
+  ) => {
+    clearMoveFxTimer();
+    setMoveFx({ visible: true, phase, message });
+    moveFxTimerRef.current = window.setTimeout(() => {
+      setMoveFx((prev) => ({ ...prev, visible: false }));
+      moveFxTimerRef.current = null;
+    }, hideAfterMs);
+  };
+
+  const moveDocumentToFolder = useMutation({
+    mutationFn: async ({
+      documentId,
+      folderId,
+    }: {
+      documentId: string;
+      folderId: string | null;
+    }) => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("You must be signed in to move documents.");
+
+      const normalizedDocumentId = documentId.trim();
+      const { data: doc, error: docError } = await supabase
+        .from("documents")
+        .select("id, created_by")
+        .eq("id", normalizedDocumentId)
+        .maybeSingle();
+
+      if (docError) throw docError;
+      if (!doc) {
+        throw new Error("Document not found.");
+      }
+      if (doc.created_by !== user.id) {
+        throw new Error("You can only move documents that you own.");
+      }
+
+      const { error } = await supabase
+        .from("documents")
+        .update({ folder_id: folderId })
+        .eq("id", normalizedDocumentId)
+        .eq("created_by", user.id);
+      if (error) throw error;
+    },
+    onMutate: (variables) => {
+      const target = variables.folderId
+        ? (folders || []).find((f) => f.id === variables.folderId)?.name ||
+          "folder"
+        : "Unfiled";
+      clearMoveFxTimer();
+      setMoveFx({
+        visible: true,
+        phase: "moving",
+        message: `Moving document to ${target}...`,
+      });
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      const target = variables.folderId
+        ? (folders || []).find((f) => f.id === variables.folderId)?.name ||
+          "folder"
+        : "Unfiled";
+      finishMoveFx("success", `Moved to ${target}.`, 1000);
+    },
+    onError: (error: Error) => {
+      finishMoveFx(
+        "error",
+        error.message || "Could not move document to selected folder.",
+        1800,
+      );
+    },
+  });
+
   const { data: folders } = useQuery({
     queryKey: ["folders"],
     queryFn: async () => {
@@ -75,6 +174,7 @@ const Dashboard = () => {
       if (!session) {
         navigate("/auth");
       } else {
+        setCurrentUserId(session.user.id);
         setUserName(
           session.user.user_metadata?.full_name ||
             session.user.email?.split("@")[0] ||
@@ -84,6 +184,12 @@ const Dashboard = () => {
     };
     checkUser();
   }, [navigate]);
+
+  useEffect(() => {
+    return () => {
+      clearMoveFxTimer();
+    };
+  }, []);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -113,7 +219,8 @@ const Dashboard = () => {
       return data;
     },
     onSuccess: (data: DocumentRow) => {
-      const folderParam = selectedFolder !== "__unfiled__" ? `?folder=${selectedFolder}` : "";
+      const folderParam =
+        selectedFolder !== "__unfiled__" ? `?folder=${selectedFolder}` : "";
       navigate(`/documents/${data.id}${folderParam}`);
     },
     onError: () => {
@@ -159,6 +266,31 @@ const Dashboard = () => {
     },
   });
 
+  const deleteFolder = useMutation({
+    mutationFn: async ({ id }: { id: string }) => {
+      const { error } = await supabase.from("folders").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: (_data, variables) => {
+      if (selectedFolder === variables.id) {
+        setSelectedFolder("__unfiled__");
+      }
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      toast({
+        title: "Folder deleted",
+        description: "Documents in this folder were moved to unfiled.",
+      });
+    },
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to delete folder",
+      });
+    },
+  });
+
   const uploadDocument = useMutation({
     mutationFn: async (file: File) => {
       const imported = await importDocumentFile(file);
@@ -175,10 +307,7 @@ const Dashboard = () => {
             title: imported.title,
             content: imported.content,
             created_by: user.id,
-            folder_id:
-              selectedFolder !== "__unfiled__"
-                ? selectedFolder
-                : null,
+            folder_id: selectedFolder !== "__unfiled__" ? selectedFolder : null,
           },
         ])
         .select()
@@ -192,7 +321,8 @@ const Dashboard = () => {
         title: "Document imported",
         description: "Your file is ready for editing.",
       });
-      const folderParam = selectedFolder !== "__unfiled__" ? `?folder=${selectedFolder}` : "";
+      const folderParam =
+        selectedFolder !== "__unfiled__" ? `?folder=${selectedFolder}` : "";
       navigate(`/documents/${data.id}${folderParam}`);
     },
     onError: (error: Error) => {
@@ -223,10 +353,36 @@ const Dashboard = () => {
     createFolder.mutate(name);
   };
 
+  const handleFolderDrop = (e: React.DragEvent, folderId: string | null) => {
+    if (viewMode !== "active") return;
+    e.preventDefault();
+    const rawDocumentId =
+      e.dataTransfer.getData("application/x-doc-id") ||
+      e.dataTransfer.getData("text/plain");
+    const documentId = rawDocumentId.trim();
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        documentId,
+      );
+
+    if (!isUuid) {
+      finishMoveFx(
+        "error",
+        "Invalid document reference from drag event.",
+        1500,
+      );
+      setDragOverFolderId(null);
+      return;
+    }
+
+    if (documentId) {
+      moveDocumentToFolder.mutate({ documentId, folderId });
+    }
+    setDragOverFolderId(null);
+  };
+
   const currentFolderForNewDoc =
-    selectedFolder !== "__unfiled__"
-      ? selectedFolder
-      : null;
+    selectedFolder !== "__unfiled__" ? selectedFolder : null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -320,58 +476,130 @@ const Dashboard = () => {
 
           {viewMode === "active" && (
             <div className="mb-6 rounded-xl border border-border/60 p-4 bg-card/70 space-y-3">
-              <div className="flex flex-col md:flex-row gap-2">
-                <Input
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  placeholder="Create a new folder..."
-                  className="font-ui"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreateFolder();
-                  }}
-                />
-                <Button
-                  onClick={handleCreateFolder}
-                  disabled={createFolder.isPending || !newFolderName.trim()}
-                  className="rounded-full"
-                >
-                  <FolderPlus className="h-4 w-4 mr-2" /> Create Folder
-                </Button>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {selectedFolder !== "__unfiled__" && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="rounded-full"
-                      onClick={() => setSelectedFolder("__unfiled__")}
-                    >
-                      <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back to Unfiled
-                    </Button>
-                    <FolderCodeDialog folderId={selectedFolder} />
-                  </>
-                )}
-                {(folders || []).map((folder: FolderRow) => (
-                  <div
-                    key={folder.id}
-                    className="inline-flex items-center rounded-full border border-border p-0.5"
+              {selectedFolder === "__unfiled__" && (
+                <div className="flex flex-col md:flex-row gap-2">
+                  <Input
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    placeholder="Create a new folder..."
+                    className="font-ui"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreateFolder();
+                    }}
+                  />
+                  <Button
+                    onClick={handleCreateFolder}
+                    disabled={createFolder.isPending || !newFolderName.trim()}
+                    className="rounded-full"
                   >
-                    <Button
-                      size="sm"
-                      variant={
-                        selectedFolder === folder.id ? "default" : "ghost"
+                    <FolderPlus className="h-4 w-4 mr-2" /> Create Folder
+                  </Button>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  {selectedFolder !== "__unfiled__" && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={`rounded-full ${
+                          dragOverFolderId === "__unfiled__"
+                            ? "border-primary bg-primary/10"
+                            : ""
+                        }`}
+                        onClick={() => setSelectedFolder("__unfiled__")}
+                        onDragOver={(e) => {
+                          if (viewMode !== "active") return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          setDragOverFolderId("__unfiled__");
+                        }}
+                        onDragLeave={() =>
+                          setDragOverFolderId((current) =>
+                            current === "__unfiled__" ? null : current,
+                          )
+                        }
+                        onDrop={(e) => {
+                          e.stopPropagation();
+                          handleFolderDrop(e, null);
+                        }}
+                      >
+                        <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+                        Back to Unfiled
+                      </Button>
+                      <FolderCodeDialog folderId={selectedFolder} />
+                    </>
+                  )}
+                  {(folders || []).map((folder: FolderRow) => (
+                    <div
+                      key={folder.id}
+                      className={`inline-flex items-center rounded-full border p-0.5 transition-colors ${
+                        dragOverFolderId === folder.id
+                          ? "border-primary bg-primary/10"
+                          : "border-border"
+                      }`}
+                      onDragOver={(e) => {
+                        if (viewMode !== "active") return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        setDragOverFolderId(folder.id);
+                      }}
+                      onDragLeave={() =>
+                        setDragOverFolderId((current) =>
+                          current === folder.id ? null : current,
+                        )
                       }
-                      className="rounded-full"
-                      onClick={() => setSelectedFolder(folder.id)}
+                      onDrop={(e) => handleFolderDrop(e, folder.id)}
                     >
-                      <FolderOpen className="h-3.5 w-3.5 mr-1" />
-                      {folder.name}
-                    </Button>
-                  </div>
-                ))}
+                      <Button
+                        size="sm"
+                        variant={
+                          selectedFolder === folder.id ? "default" : "ghost"
+                        }
+                        className="rounded-full"
+                        onClick={() => setSelectedFolder(folder.id)}
+                        onDragOver={(e) => {
+                          if (viewMode !== "active") return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          setDragOverFolderId(folder.id);
+                        }}
+                        onDrop={(e) => {
+                          e.stopPropagation();
+                          handleFolderDrop(e, folder.id);
+                        }}
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 mr-1" />
+                        {folder.name}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+
+                {selectedFolder !== "__unfiled__" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="rounded-full text-muted-foreground hover:text-destructive self-end md:self-start"
+                    onClick={() => {
+                      const currentFolder = (folders || []).find(
+                        (folder) => folder.id === selectedFolder,
+                      );
+                      const folderName = currentFolder?.name || "this folder";
+                      const shouldDelete = window.confirm(
+                        `Delete folder \"${folderName}\"? Documents will remain available in Unfiled.`,
+                      );
+                      if (shouldDelete) {
+                        deleteFolder.mutate({ id: selectedFolder });
+                      }
+                    }}
+                    disabled={deleteFolder.isPending}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Folder
+                  </Button>
+                )}
               </div>
             </div>
           )}
@@ -379,9 +607,67 @@ const Dashboard = () => {
           <DocumentList
             showTrash={viewMode === "trash"}
             folderFilter={viewMode === "active" ? selectedFolder : "all"}
+            currentUserId={currentUserId}
           />
         </motion.div>
       </main>
+
+      <AnimatePresence>
+        {moveFx.visible && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-background/60 backdrop-blur-md"
+            aria-live="polite"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="w-[92%] max-w-sm rounded-2xl border border-border/60 bg-card/95 p-6 shadow-float"
+            >
+              <div className="flex items-center gap-3">
+                <div className="relative flex h-11 w-11 items-center justify-center rounded-full bg-muted">
+                  {moveFx.phase === "moving" && (
+                    <>
+                      <motion.div
+                        className="absolute inset-0 rounded-full border-2 border-primary/30"
+                        animate={{ rotate: 360 }}
+                        transition={{
+                          repeat: Infinity,
+                          duration: 1.1,
+                          ease: "linear",
+                        }}
+                      />
+                      <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                    </>
+                  )}
+                  {moveFx.phase === "success" && (
+                    <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+                  )}
+                  {moveFx.phase === "error" && (
+                    <XCircle className="h-6 w-6 text-destructive" />
+                  )}
+                </div>
+                <div>
+                  <p className="font-ui text-sm text-muted-foreground">
+                    {moveFx.phase === "moving"
+                      ? "Updating location"
+                      : moveFx.phase === "success"
+                        ? "Move completed"
+                        : "Move failed"}
+                  </p>
+                  <p className="font-ui text-sm font-medium text-foreground">
+                    {moveFx.message}
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
