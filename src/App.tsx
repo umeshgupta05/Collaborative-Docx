@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HelmetProvider } from "react-helmet-async";
 import { Toaster } from "@/components/ui/toaster";
@@ -14,7 +15,20 @@ import "./App.css";
 
 const queryClient = new QueryClient();
 
+const UI_MODE_KEY = "ui-mode";
+
+const applyUiMode = (mode: string | null) => {
+  const root = document.documentElement;
+  root.classList.remove("light", "dark");
+  if (mode === "light") root.classList.add("light");
+  if (mode === "dark") root.classList.add("dark");
+};
+
 function App() {
+  useEffect(() => {
+    applyUiMode(localStorage.getItem(UI_MODE_KEY));
+  }, []);
+
   return (
     <HelmetProvider>
       <QueryClientProvider client={queryClient}>

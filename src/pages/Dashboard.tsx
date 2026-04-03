@@ -3,6 +3,16 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/use-toast";
 import DocumentList from "@/components/DocumentList";
 import { Input } from "@/components/ui/input";
@@ -19,6 +29,7 @@ import {
   ArrowLeft,
   Loader2,
   XCircle,
+  MoreHorizontal,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { Tables } from "@/integrations/supabase/types";
@@ -27,6 +38,23 @@ import { importDocumentFile } from "@/utils/document-import";
 
 type DocumentRow = Tables<"documents">;
 type FolderRow = Tables<"folders">;
+type UiMode = "default" | "light" | "dark";
+
+const UI_MODE_KEY = "ui-mode";
+
+const parseUiMode = (value: string | null): UiMode => {
+  if (value === "light" || value === "dark" || value === "default") {
+    return value;
+  }
+  return "default";
+};
+
+const applyUiMode = (mode: UiMode) => {
+  const root = document.documentElement;
+  root.classList.remove("light", "dark");
+  if (mode === "light") root.classList.add("light");
+  if (mode === "dark") root.classList.add("dark");
+};
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -36,6 +64,9 @@ const Dashboard = () => {
   const [userName, setUserName] = useState("");
   const [currentUserId, setCurrentUserId] = useState<string>("");
   const [viewMode, setViewMode] = useState<"active" | "trash">("active");
+  const [uiMode, setUiMode] = useState<UiMode>(() =>
+    parseUiMode(localStorage.getItem(UI_MODE_KEY)),
+  );
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [moveFx, setMoveFx] = useState<{
     visible: boolean;
@@ -184,6 +215,11 @@ const Dashboard = () => {
     };
     checkUser();
   }, [navigate]);
+
+  useEffect(() => {
+    applyUiMode(uiMode);
+    localStorage.setItem(UI_MODE_KEY, uiMode);
+  }, [uiMode]);
 
   useEffect(() => {
     return () => {
@@ -404,7 +440,7 @@ const Dashboard = () => {
               Welcome, {userName}
             </span>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             <input
               ref={uploadInputRef}
               type="file"
@@ -415,29 +451,58 @@ const Dashboard = () => {
             <Button
               onClick={() => createDocument.mutate(currentFolderForNewDoc)}
               disabled={createDocument.isPending}
-              className="font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all"
+              className="font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all px-3 sm:px-4"
             >
               <Plus className="h-4 w-4 sm:mr-2" />
               <span className="hidden sm:inline">New Document</span>
             </Button>
+
             <Button
               onClick={handleUploadClick}
               disabled={uploadDocument.isPending}
-              className="font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all"
+              className="hidden sm:inline-flex font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all px-3 sm:px-4"
             >
               <Upload className="h-4 w-4 sm:mr-2" />
-              <span className="hidden sm:inline">
+              <span>
                 {uploadDocument.isPending ? "Importing..." : "Upload Document"}
               </span>
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleSignOut}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="rounded-full hidden sm:inline-flex"
+                  aria-label="Open dashboard actions"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={uiMode}
+                  onValueChange={(value) => setUiMode(parseUiMode(value))}
+                >
+                  <DropdownMenuRadioItem value="default">
+                    Default
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="light">
+                    Light
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="dark">
+                    Dark
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={handleSignOut}>
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
@@ -611,6 +676,48 @@ const Dashboard = () => {
           />
         </motion.div>
       </main>
+
+      <div className="fixed bottom-5 right-5 z-[110] sm:hidden">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon"
+              className="h-12 w-12 rounded-full shadow-float"
+              aria-label="Open quick actions"
+            >
+              <MoreHorizontal className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem
+              onSelect={handleUploadClick}
+              disabled={uploadDocument.isPending}
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              {uploadDocument.isPending ? "Importing..." : "Upload Document"}
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={uiMode}
+              onValueChange={(value) => setUiMode(parseUiMode(value))}
+            >
+              <DropdownMenuRadioItem value="default">
+                Default
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={handleSignOut}>
+              <LogOut className="h-4 w-4 mr-2" />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
 
       <AnimatePresence>
         {moveFx.visible && (

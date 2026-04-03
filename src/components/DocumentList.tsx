@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,11 +10,24 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { format } from "date-fns";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Copy,
   FileText,
   Clock,
+  FolderInput,
   Search,
   Trash2,
   RotateCcw,
@@ -22,8 +35,10 @@ import {
   List,
 } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
+import { useToast } from "@/hooks/use-toast";
 
 type DocumentRow = Tables<"documents">;
+type FolderRow = Tables<"folders">;
 type DocumentStatus = "draft" | "review" | "final" | "archived";
 
 const statusOptions: Array<{ value: DocumentStatus; tone: string }> = [
@@ -91,6 +106,7 @@ const DocumentList = ({
 }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTag, setSelectedTag] = useState("all");
   const [sortBy, setSortBy] = useState<
@@ -98,6 +114,8 @@ const DocumentList = ({
   >("time-desc");
   const [viewMode, setViewMode] = useState<"cards" | "list">("cards");
   const [statusMenuDocId, setStatusMenuDocId] = useState<string | null>(null);
+  const [statusPulseDocId, setStatusPulseDocId] = useState<string | null>(null);
+  const statusPulseTimerRef = useRef<number | null>(null);
 
   const { data: documents, isLoading } = useQuery({
     queryKey: ["documents", showTrash, folderFilter],
@@ -120,6 +138,18 @@ const DocumentList = ({
       }
 
       const { data, error } = await query;
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: folders } = useQuery({
+    queryKey: ["folders"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("folders")
+        .select("*")
+        .order("updated_at", { ascending: false });
       if (error) throw error;
       return data;
     },
@@ -166,10 +196,129 @@ const DocumentList = ({
         .eq("created_by", currentUserId);
       if (error) throw error;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (statusPulseTimerRef.current) {
+        window.clearTimeout(statusPulseTimerRef.current);
+      }
+      setStatusPulseDocId(variables.documentId);
+      statusPulseTimerRef.current = window.setTimeout(() => {
+        setStatusPulseDocId((current) =>
+          current === variables.documentId ? null : current,
+        );
+        statusPulseTimerRef.current = null;
+      }, 450);
     },
   });
+
+  const moveDocumentToFolder = useMutation({
+    mutationFn: async ({
+      documentId,
+      folderId,
+    }: {
+      documentId: string;
+      folderId: string | null;
+    }) => {
+      if (!currentUserId) throw new Error("User not authenticated");
+      const { error } = await supabase
+        .from("documents")
+        .update({ folder_id: folderId })
+        .eq("id", documentId)
+        .eq("created_by", currentUserId);
+      if (error) throw error;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      const targetName = variables.folderId
+        ? (folders || []).find((folder) => folder.id === variables.folderId)
+            ?.name || "Folder"
+        : "Unfiled";
+      toast({
+        title: "Moved",
+        description: `Document moved to ${targetName}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Move failed",
+        description: error.message || "Could not move document.",
+      });
+    },
+  });
+
+  const copyDocumentToFolder = useMutation({
+    mutationFn: async ({
+      document,
+      folderId,
+    }: {
+      document: DocumentRow;
+      folderId: string | null;
+    }) => {
+      if (!currentUserId) throw new Error("User not authenticated");
+      const sourceFolderId = document.folder_id || null;
+      const targetFolderId = folderId || null;
+      const sameFolder = sourceFolderId === targetFolderId;
+      const copyTitle = sameFolder
+        ? `${document.title} (copy)`
+        : document.title;
+
+      const { error } = await supabase.from("documents").insert([
+        {
+          title: copyTitle,
+          content: document.content,
+          status: document.status,
+          tags: document.tags,
+          folder_id: folderId,
+          created_by: currentUserId,
+          document_border_style: document.document_border_style,
+          is_template: document.is_template,
+          parent_id: document.parent_id,
+        },
+      ]);
+      if (error) throw error;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      const targetName = variables.folderId
+        ? (folders || []).find((folder) => folder.id === variables.folderId)
+            ?.name || "Folder"
+        : "Unfiled";
+      toast({
+        title: "Copied",
+        description: `Document copied to ${targetName}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Copy failed",
+        description: error.message || "Could not copy document.",
+      });
+    },
+  });
+
+  const folderTargets: Array<{ id: string | null; name: string }> = useMemo(
+    () => [
+      { id: null, name: "Unfiled" },
+      ...((folders || []) as FolderRow[]).map((folder) => ({
+        id: folder.id,
+        name: folder.name,
+      })),
+    ],
+    [folders],
+  );
+
+  const isDocOwned = (doc: DocumentRow) =>
+    !!currentUserId && doc.created_by === currentUserId;
+
+  useEffect(() => {
+    return () => {
+      if (statusPulseTimerRef.current) {
+        window.clearTimeout(statusPulseTimerRef.current);
+      }
+    };
+  }, []);
 
   const availableTags = useMemo(() => {
     const tags = (documents || []).flatMap(
@@ -327,179 +476,272 @@ const DocumentList = ({
                     ease: [0.22, 1, 0.36, 1],
                   }}
                 >
-                  <Card
-                    className="cursor-pointer group border-border/50 hover:border-primary/30 hover:shadow-soft transition-all duration-200 bg-card"
-                    draggable={!showTrash && isOwned}
-                    onDragStart={(e) => {
-                      if (showTrash || !isOwned) return;
-                      e.dataTransfer.setData("application/x-doc-id", doc.id);
-                      e.dataTransfer.setData("text/plain", doc.id);
-                      e.dataTransfer.effectAllowed = "move";
-                    }}
-                    onClick={() => {
-                      if (!showTrash) navigate(`/documents/${doc.id}`);
-                    }}
-                  >
-                    <CardHeader className="p-3 pb-2 space-y-2">
-                      <div className="flex items-start justify-between">
-                        <FileText className="h-4 w-4 text-primary/60 mt-0.5 shrink-0" />
-                        <div className="flex items-center gap-1">
-                          <div
-                            className="relative"
-                            onMouseEnter={(e) => {
-                              e.stopPropagation();
-                              if (!showTrash && isOwned)
-                                setStatusMenuDocId(doc.id);
-                            }}
-                            onMouseLeave={(e) => {
-                              e.stopPropagation();
-                              setStatusMenuDocId((current) =>
-                                current === doc.id ? null : current,
-                              );
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <span
-                              className={`text-xs font-ui px-2 py-0.5 rounded-full border ${statusBadgeClass(
-                                doc.status,
-                              )} ${
-                                !showTrash && isOwned
-                                  ? "cursor-pointer"
-                                  : "cursor-default"
-                              }`}
-                            >
-                              {formatStatus(doc.status)}
-                            </span>
-                            <AnimatePresence>
-                              {statusMenuDocId === doc.id &&
-                                !showTrash &&
-                                isOwned && (
-                                  <motion.div
-                                    initial={{ opacity: 0, y: -6, scale: 0.96 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: -4, scale: 0.96 }}
-                                    transition={{ duration: 0.2 }}
-                                    className="pointer-events-none absolute left-1/2 top-1/2 z-30 h-0 w-0 -translate-x-1/2 -translate-y-1/2"
-                                  >
-                                    {statusOptions.map((option, idx) => {
-                                      const active =
-                                        normalizeStatus(doc.status) ===
-                                        option.value;
-                                      const offset = statusBubbleOffsets[idx];
-                                      return (
-                                        <div
-                                          key={`${doc.id}-${option.value}`}
-                                          className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
-                                          style={{
-                                            left: `${offset.x}px`,
-                                            top: `${offset.y}px`,
-                                          }}
-                                        >
-                                          <motion.button
-                                            type="button"
-                                            initial={{
-                                              opacity: 0,
-                                              y: 8,
-                                              scale: 0.8,
-                                            }}
-                                            animate={{
-                                              opacity: 1,
-                                              y: 0,
-                                              scale: 1,
-                                            }}
-                                            exit={{
-                                              opacity: 0,
-                                              y: 6,
-                                              scale: 0.86,
-                                            }}
-                                            transition={{
-                                              duration: 0.22,
-                                              delay: idx * 0.04,
-                                            }}
-                                            whileHover={{ scale: 1.08, y: -2 }}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              if (
-                                                shouldUpdateStatus(
-                                                  doc.status,
-                                                  option.value,
-                                                )
-                                              ) {
-                                                updateDocumentStatus.mutate({
-                                                  documentId: doc.id,
-                                                  status: option.value,
-                                                });
-                                              }
-                                              setStatusMenuDocId(null);
-                                            }}
-                                            className={`pointer-events-auto h-7 w-[60px] rounded-full border px-1 text-[8px] font-ui tracking-tight shadow-md ${option.tone} ${
-                                              active
-                                                ? "ring-2 ring-primary/35"
-                                                : "opacity-95 hover:opacity-100"
-                                            }`}
-                                          >
-                                            {formatStatus(option.value)}
-                                          </motion.button>
-                                        </div>
-                                      );
-                                    })}
-                                  </motion.div>
-                                )}
-                            </AnimatePresence>
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <Card
+                        className="cursor-pointer group border-border/50 hover:border-primary/30 hover:shadow-soft transition-all duration-200 bg-card"
+                        draggable={!showTrash && isOwned}
+                        onDragStart={(e) => {
+                          if (showTrash || !isOwned) return;
+                          e.dataTransfer.setData(
+                            "application/x-doc-id",
+                            doc.id,
+                          );
+                          e.dataTransfer.setData("text/plain", doc.id);
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                        onClick={() => {
+                          if (!showTrash) navigate(`/documents/${doc.id}`);
+                        }}
+                      >
+                        <CardHeader className="p-3 pb-2 space-y-2">
+                          <div className="flex items-start justify-between">
+                            <FileText className="h-4 w-4 text-primary/60 mt-0.5 shrink-0" />
+                            <div className="flex items-center gap-1">
+                              <div
+                                className="relative"
+                                onMouseEnter={(e) => {
+                                  e.stopPropagation();
+                                  if (!showTrash && isOwned)
+                                    setStatusMenuDocId(doc.id);
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.stopPropagation();
+                                  setStatusMenuDocId((current) =>
+                                    current === doc.id ? null : current,
+                                  );
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <motion.span
+                                  className={`text-xs font-ui px-2 py-0.5 rounded-full border ${statusBadgeClass(
+                                    doc.status,
+                                  )} ${
+                                    !showTrash && isOwned
+                                      ? "cursor-pointer"
+                                      : "cursor-default"
+                                  }`}
+                                  animate={
+                                    statusPulseDocId === doc.id
+                                      ? {
+                                          scale: [1, 1.12, 1],
+                                          filter: [
+                                            "brightness(1)",
+                                            "brightness(1.1)",
+                                            "brightness(1)",
+                                          ],
+                                        }
+                                      : { scale: 1, filter: "brightness(1)" }
+                                  }
+                                  transition={{
+                                    duration: 0.35,
+                                    ease: "easeOut",
+                                  }}
+                                >
+                                  {formatStatus(doc.status)}
+                                </motion.span>
+                                <AnimatePresence>
+                                  {statusMenuDocId === doc.id &&
+                                    !showTrash &&
+                                    isOwned && (
+                                      <motion.div
+                                        initial={{
+                                          opacity: 0,
+                                          y: -6,
+                                          scale: 0.96,
+                                        }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{
+                                          opacity: 0,
+                                          y: -4,
+                                          scale: 0.96,
+                                        }}
+                                        transition={{ duration: 0.2 }}
+                                        className="pointer-events-none absolute left-1/2 top-1/2 z-30 h-0 w-0 -translate-x-1/2 -translate-y-1/2"
+                                      >
+                                        {statusOptions.map((option, idx) => {
+                                          const active =
+                                            normalizeStatus(doc.status) ===
+                                            option.value;
+                                          const offset =
+                                            statusBubbleOffsets[idx];
+                                          return (
+                                            <div
+                                              key={`${doc.id}-${option.value}`}
+                                              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+                                              style={{
+                                                left: `${offset.x}px`,
+                                                top: `${offset.y}px`,
+                                              }}
+                                            >
+                                              <motion.button
+                                                type="button"
+                                                initial={{
+                                                  opacity: 0,
+                                                  y: 8,
+                                                  scale: 0.8,
+                                                }}
+                                                animate={{
+                                                  opacity: 1,
+                                                  y: 0,
+                                                  scale: 1,
+                                                }}
+                                                exit={{
+                                                  opacity: 0,
+                                                  y: 6,
+                                                  scale: 0.86,
+                                                }}
+                                                transition={{
+                                                  duration: 0.22,
+                                                  delay: idx * 0.04,
+                                                }}
+                                                whileHover={{
+                                                  scale: 1.08,
+                                                  y: -2,
+                                                }}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (
+                                                    shouldUpdateStatus(
+                                                      doc.status,
+                                                      option.value,
+                                                    )
+                                                  ) {
+                                                    updateDocumentStatus.mutate(
+                                                      {
+                                                        documentId: doc.id,
+                                                        status: option.value,
+                                                      },
+                                                    );
+                                                  }
+                                                  setStatusMenuDocId(null);
+                                                }}
+                                                className={`pointer-events-auto h-7 w-[60px] rounded-full border px-1 text-[9px] font-ui shadow-md ${option.tone} ${
+                                                  active
+                                                    ? "ring-2 ring-primary/35"
+                                                    : "opacity-95 hover:opacity-100"
+                                                }`}
+                                              >
+                                                {formatStatus(option.value)}
+                                              </motion.button>
+                                            </div>
+                                          );
+                                        })}
+                                      </motion.div>
+                                    )}
+                                </AnimatePresence>
+                              </div>
+                              {showTrash ? (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    restoreDocument.mutate(doc.id);
+                                  }}
+                                  aria-label="Restore document"
+                                >
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    softDeleteDocument.mutate(doc.id);
+                                  }}
+                                  aria-label="Move to trash"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                            </div>
                           </div>
-                          {showTrash ? (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                restoreDocument.mutate(doc.id);
-                              }}
-                              aria-label="Restore document"
-                            >
-                              <RotateCcw className="h-3.5 w-3.5" />
-                            </Button>
-                          ) : (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                softDeleteDocument.mutate(doc.id);
-                              }}
-                              aria-label="Move to trash"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                          <CardTitle className="font-display text-base font-semibold leading-tight group-hover:text-primary transition-colors line-clamp-2">
+                            {doc.title}
+                          </CardTitle>
+                          {!!doc.tags?.length && (
+                            <div className="flex flex-wrap gap-1">
+                              {doc.tags.map((tag) => (
+                                <span
+                                  key={`${doc.id}-${tag}`}
+                                  className="text-[10px] font-ui px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
                           )}
-                        </div>
-                      </div>
-                      <CardTitle className="font-display text-base font-semibold leading-tight group-hover:text-primary transition-colors line-clamp-2">
-                        {doc.title}
-                      </CardTitle>
-                      {!!doc.tags?.length && (
-                        <div className="flex flex-wrap gap-1">
-                          {doc.tags.map((tag) => (
-                            <span
-                              key={`${doc.id}-${tag}`}
-                              className="text-[10px] font-ui px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <CardDescription className="font-ui text-[11px] flex items-center gap-1.5 text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        {format(
-                          new Date(doc.updated_at),
-                          "MMM d, yyyy · h:mm a",
-                        )}
-                      </CardDescription>
-                    </CardHeader>
-                  </Card>
+                          <CardDescription className="font-ui text-[11px] flex items-center gap-1.5 text-muted-foreground">
+                            <Clock className="h-3 w-3" />
+                            {format(
+                              new Date(doc.updated_at),
+                              "MMM d, yyyy · h:mm a",
+                            )}
+                          </CardDescription>
+                        </CardHeader>
+                      </Card>
+                    </ContextMenuTrigger>
+                    {!showTrash && (
+                      <ContextMenuContent className="w-56">
+                        <ContextMenuLabel className="truncate">
+                          {doc.title}
+                        </ContextMenuLabel>
+                        <ContextMenuSeparator />
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger
+                            inset
+                            disabled={!isDocOwned(doc)}
+                          >
+                            <FolderInput className="mr-2 h-4 w-4" />
+                            Move to
+                          </ContextMenuSubTrigger>
+                          <ContextMenuSubContent className="w-52">
+                            {folderTargets.map((target) => (
+                              <ContextMenuItem
+                                key={`move-${doc.id}-${target.id || "unfiled"}`}
+                                onSelect={() =>
+                                  moveDocumentToFolder.mutate({
+                                    documentId: doc.id,
+                                    folderId: target.id,
+                                  })
+                                }
+                              >
+                                {target.name}
+                              </ContextMenuItem>
+                            ))}
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger
+                            inset
+                            disabled={!isDocOwned(doc)}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy to
+                          </ContextMenuSubTrigger>
+                          <ContextMenuSubContent className="w-52">
+                            {folderTargets.map((target) => (
+                              <ContextMenuItem
+                                key={`copy-${doc.id}-${target.id || "unfiled"}`}
+                                onSelect={() =>
+                                  copyDocumentToFolder.mutate({
+                                    document: doc,
+                                    folderId: target.id,
+                                  })
+                                }
+                              >
+                                {target.name}
+                              </ContextMenuItem>
+                            ))}
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                      </ContextMenuContent>
+                    )}
+                  </ContextMenu>
                 </motion.div>
               );
             })(),
@@ -517,146 +759,228 @@ const DocumentList = ({
               const isOwned =
                 !!currentUserId && doc.created_by === currentUserId;
               return (
-                <div
-                  key={doc.id}
-                  className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 items-center hover:bg-muted/40 transition-colors cursor-pointer"
-                  draggable={!showTrash && isOwned}
-                  onDragStart={(e) => {
-                    if (showTrash || !isOwned) return;
-                    e.dataTransfer.setData("application/x-doc-id", doc.id);
-                    e.dataTransfer.setData("text/plain", doc.id);
-                    e.dataTransfer.effectAllowed = "move";
-                  }}
-                  onClick={() => {
-                    if (!showTrash) navigate(`/documents/${doc.id}`);
-                  }}
-                >
-                  <div className="min-w-0 flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-primary/60 shrink-0" />
-                    <span className="text-sm font-ui truncate">
-                      {doc.title}
-                    </span>
-                  </div>
-                  <div
-                    className="relative justify-self-start"
-                    onMouseEnter={(e) => {
-                      e.stopPropagation();
-                      if (!showTrash && isOwned) setStatusMenuDocId(doc.id);
-                    }}
-                    onMouseLeave={(e) => {
-                      e.stopPropagation();
-                      setStatusMenuDocId((current) =>
-                        current === doc.id ? null : current,
-                      );
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <span
-                      className={`text-xs font-ui px-2 py-0.5 rounded-full border ${statusBadgeClass(
-                        doc.status,
-                      )} ${
-                        !showTrash && isOwned
-                          ? "cursor-pointer"
-                          : "cursor-default"
-                      }`}
+                <ContextMenu key={doc.id}>
+                  <ContextMenuTrigger asChild>
+                    <div
+                      className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 items-center hover:bg-muted/40 transition-colors cursor-pointer"
+                      draggable={!showTrash && isOwned}
+                      onDragStart={(e) => {
+                        if (showTrash || !isOwned) return;
+                        e.dataTransfer.setData("application/x-doc-id", doc.id);
+                        e.dataTransfer.setData("text/plain", doc.id);
+                        e.dataTransfer.effectAllowed = "move";
+                      }}
+                      onClick={() => {
+                        if (!showTrash) navigate(`/documents/${doc.id}`);
+                      }}
                     >
-                      {formatStatus(doc.status)}
-                    </span>
-                    <AnimatePresence>
-                      {statusMenuDocId === doc.id && !showTrash && isOwned && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -6, scale: 0.96 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -4, scale: 0.96 }}
-                          transition={{ duration: 0.2 }}
-                          className="pointer-events-none absolute left-1/2 top-1/2 z-30 h-0 w-0 -translate-x-1/2 -translate-y-1/2"
+                      <div className="min-w-0 flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-primary/60 shrink-0" />
+                        <span className="text-sm font-ui truncate">
+                          {doc.title}
+                        </span>
+                      </div>
+                      <div
+                        className="relative justify-self-start"
+                        onMouseEnter={(e) => {
+                          e.stopPropagation();
+                          if (!showTrash && isOwned) setStatusMenuDocId(doc.id);
+                        }}
+                        onMouseLeave={(e) => {
+                          e.stopPropagation();
+                          setStatusMenuDocId((current) =>
+                            current === doc.id ? null : current,
+                          );
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <motion.span
+                          className={`text-xs font-ui px-2 py-0.5 rounded-full border ${statusBadgeClass(
+                            doc.status,
+                          )} ${
+                            !showTrash && isOwned
+                              ? "cursor-pointer"
+                              : "cursor-default"
+                          }`}
+                          animate={
+                            statusPulseDocId === doc.id
+                              ? {
+                                  scale: [1, 1.12, 1],
+                                  filter: [
+                                    "brightness(1)",
+                                    "brightness(1.1)",
+                                    "brightness(1)",
+                                  ],
+                                }
+                              : { scale: 1, filter: "brightness(1)" }
+                          }
+                          transition={{ duration: 0.35, ease: "easeOut" }}
                         >
-                          {statusOptions.map((option, idx) => {
-                            const active =
-                              normalizeStatus(doc.status) === option.value;
-                            const offset = statusBubbleOffsets[idx];
-                            return (
-                              <div
-                                key={`${doc.id}-list-${option.value}`}
-                                className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
-                                style={{
-                                  left: `${offset.x}px`,
-                                  top: `${offset.y}px`,
-                                }}
+                          {formatStatus(doc.status)}
+                        </motion.span>
+                        <AnimatePresence>
+                          {statusMenuDocId === doc.id &&
+                            !showTrash &&
+                            isOwned && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -6, scale: 0.96 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: -4, scale: 0.96 }}
+                                transition={{ duration: 0.2 }}
+                                className="pointer-events-none absolute left-1/2 top-1/2 z-30 h-0 w-0 -translate-x-1/2 -translate-y-1/2"
                               >
-                                <motion.button
-                                  type="button"
-                                  initial={{ opacity: 0, y: 8, scale: 0.8 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  exit={{ opacity: 0, y: 6, scale: 0.86 }}
-                                  transition={{
-                                    duration: 0.22,
-                                    delay: idx * 0.04,
-                                  }}
-                                  whileHover={{ scale: 1.08, y: -2 }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (
-                                      shouldUpdateStatus(
-                                        doc.status,
-                                        option.value,
-                                      )
-                                    ) {
-                                      updateDocumentStatus.mutate({
-                                        documentId: doc.id,
-                                        status: option.value,
-                                      });
-                                    }
-                                    setStatusMenuDocId(null);
-                                  }}
-                                  className={`pointer-events-auto h-7 w-[60px] rounded-full border px-1 text-[8px] font-ui tracking-tight shadow-md ${option.tone} ${
-                                    active
-                                      ? "ring-2 ring-primary/35"
-                                      : "opacity-95 hover:opacity-100"
-                                  }`}
-                                >
-                                  {formatStatus(option.value)}
-                                </motion.button>
-                              </div>
-                            );
-                          })}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-ui text-muted-foreground whitespace-nowrap">
-                      {format(new Date(doc.updated_at), "MMM d, yyyy · h:mm a")}
-                    </span>
-                    {showTrash ? (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-6 w-6"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          restoreDocument.mutate(doc.id);
-                        }}
-                        aria-label="Restore document"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                      </Button>
-                    ) : (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          softDeleteDocument.mutate(doc.id);
-                        }}
-                        aria-label="Move to trash"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
+                                {statusOptions.map((option, idx) => {
+                                  const active =
+                                    normalizeStatus(doc.status) ===
+                                    option.value;
+                                  const offset = statusBubbleOffsets[idx];
+                                  return (
+                                    <div
+                                      key={`${doc.id}-list-${option.value}`}
+                                      className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+                                      style={{
+                                        left: `${offset.x}px`,
+                                        top: `${offset.y}px`,
+                                      }}
+                                    >
+                                      <motion.button
+                                        type="button"
+                                        initial={{
+                                          opacity: 0,
+                                          y: 8,
+                                          scale: 0.8,
+                                        }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: 6, scale: 0.86 }}
+                                        transition={{
+                                          duration: 0.22,
+                                          delay: idx * 0.04,
+                                        }}
+                                        whileHover={{ scale: 1.08, y: -2 }}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (
+                                            shouldUpdateStatus(
+                                              doc.status,
+                                              option.value,
+                                            )
+                                          ) {
+                                            updateDocumentStatus.mutate({
+                                              documentId: doc.id,
+                                              status: option.value,
+                                            });
+                                          }
+                                          setStatusMenuDocId(null);
+                                        }}
+                                        className={`pointer-events-auto h-7 w-[60px] rounded-full border px-1 text-[9px] font-ui shadow-md ${option.tone} ${
+                                          active
+                                            ? "ring-2 ring-primary/35"
+                                            : "opacity-95 hover:opacity-100"
+                                        }`}
+                                      >
+                                        {formatStatus(option.value)}
+                                      </motion.button>
+                                    </div>
+                                  );
+                                })}
+                              </motion.div>
+                            )}
+                        </AnimatePresence>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-ui text-muted-foreground whitespace-nowrap">
+                          {format(
+                            new Date(doc.updated_at),
+                            "MMM d, yyyy · h:mm a",
+                          )}
+                        </span>
+                        {showTrash ? (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              restoreDocument.mutate(doc.id);
+                            }}
+                            aria-label="Restore document"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              softDeleteDocument.mutate(doc.id);
+                            }}
+                            aria-label="Move to trash"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </ContextMenuTrigger>
+                  {!showTrash && (
+                    <ContextMenuContent className="w-56">
+                      <ContextMenuLabel className="truncate">
+                        {doc.title}
+                      </ContextMenuLabel>
+                      <ContextMenuSeparator />
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger
+                          inset
+                          disabled={!isDocOwned(doc)}
+                        >
+                          <FolderInput className="mr-2 h-4 w-4" />
+                          Move to
+                        </ContextMenuSubTrigger>
+                        <ContextMenuSubContent className="w-52">
+                          {folderTargets.map((target) => (
+                            <ContextMenuItem
+                              key={`list-move-${doc.id}-${target.id || "unfiled"}`}
+                              onSelect={() =>
+                                moveDocumentToFolder.mutate({
+                                  documentId: doc.id,
+                                  folderId: target.id,
+                                })
+                              }
+                            >
+                              {target.name}
+                            </ContextMenuItem>
+                          ))}
+                        </ContextMenuSubContent>
+                      </ContextMenuSub>
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger
+                          inset
+                          disabled={!isDocOwned(doc)}
+                        >
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copy to
+                        </ContextMenuSubTrigger>
+                        <ContextMenuSubContent className="w-52">
+                          {folderTargets.map((target) => (
+                            <ContextMenuItem
+                              key={`list-copy-${doc.id}-${target.id || "unfiled"}`}
+                              onSelect={() =>
+                                copyDocumentToFolder.mutate({
+                                  document: doc,
+                                  folderId: target.id,
+                                })
+                              }
+                            >
+                              {target.name}
+                            </ContextMenuItem>
+                          ))}
+                        </ContextMenuSubContent>
+                      </ContextMenuSub>
+                    </ContextMenuContent>
+                  )}
+                </ContextMenu>
               );
             })}
           </div>
