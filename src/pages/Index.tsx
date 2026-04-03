@@ -1,9 +1,22 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { supabase } from "@/integrations/supabase/client";
 import { motion } from "framer-motion";
-import { FileText, Users, Zap, Shield, ArrowRight } from "lucide-react";
+import {
+  FileText,
+  Users,
+  Zap,
+  Shield,
+  ArrowRight,
+  Download,
+} from "lucide-react";
 import SEO from "@/components/SEO";
 
 const Index = () => {
@@ -87,16 +100,40 @@ const Index = () => {
             >
               Sign In
             </Button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="rounded-full sm:hidden"
+                  aria-label="Download options"
+                >
+                  <Download className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem onSelect={() => navigate("/download")}>
+                  Download by Code
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => navigate("/download-folder")}
+                >
+                  Folder Download
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             <Button
               variant="outline"
-              className="font-ui text-sm rounded-full"
+              className="font-ui text-sm rounded-full hidden sm:inline-flex"
               onClick={() => navigate("/download")}
             >
               Download by Code
             </Button>
             <Button
               variant="outline"
-              className="font-ui text-sm rounded-full"
+              className="font-ui text-sm rounded-full hidden sm:inline-flex"
               onClick={() => navigate("/download-folder")}
             >
               Folder Download

@@ -4,6 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -64,6 +72,8 @@ const Dashboard = () => {
   const [userName, setUserName] = useState("");
   const [currentUserId, setCurrentUserId] = useState<string>("");
   const [viewMode, setViewMode] = useState<"active" | "trash">("active");
+  const [newDocumentDialogOpen, setNewDocumentDialogOpen] = useState(false);
+  const [newDocumentName, setNewDocumentName] = useState("");
   const [uiMode, setUiMode] = useState<UiMode>(() =>
     parseUiMode(localStorage.getItem(UI_MODE_KEY)),
   );
@@ -232,18 +242,49 @@ const Dashboard = () => {
     navigate("/auth");
   };
 
+  const resolveUntitledName = async (userId: string) => {
+    const { data, error } = await supabase
+      .from("documents")
+      .select("title")
+      .eq("created_by", userId)
+      .is("deleted_at", null)
+      .ilike("title", "Untitled Document%");
+
+    if (error) throw error;
+
+    const used = new Set((data || []).map((d) => d.title));
+    if (!used.has("Untitled Document")) {
+      return "Untitled Document";
+    }
+
+    let next = 2;
+    while (used.has(`Untitled Document ${next}`)) {
+      next += 1;
+    }
+    return `Untitled Document ${next}`;
+  };
+
   const createDocument = useMutation({
-    mutationFn: async (folderId: string | null) => {
+    mutationFn: async ({
+      folderId,
+      titleInput,
+    }: {
+      folderId: string | null;
+      titleInput: string;
+    }) => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) throw new Error("User not authenticated");
 
+      const requestedTitle = titleInput.trim();
+      const title = requestedTitle || (await resolveUntitledName(user.id));
+
       const { data, error } = await supabase
         .from("documents")
         .insert([
           {
-            title: "Untitled Document",
+            title,
             created_by: user.id,
             folder_id: folderId,
           },
@@ -255,6 +296,8 @@ const Dashboard = () => {
       return data;
     },
     onSuccess: (data: DocumentRow) => {
+      setNewDocumentDialogOpen(false);
+      setNewDocumentName("");
       const folderParam =
         selectedFolder !== "__unfiled__" ? `?folder=${selectedFolder}` : "";
       navigate(`/documents/${data.id}${folderParam}`);
@@ -420,6 +463,13 @@ const Dashboard = () => {
   const currentFolderForNewDoc =
     selectedFolder !== "__unfiled__" ? selectedFolder : null;
 
+  const handleCreateDocument = () => {
+    createDocument.mutate({
+      folderId: currentFolderForNewDoc,
+      titleInput: newDocumentName,
+    });
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <SEO
@@ -449,9 +499,9 @@ const Dashboard = () => {
               onChange={handleFileSelected}
             />
             <Button
-              onClick={() => createDocument.mutate(currentFolderForNewDoc)}
+              onClick={() => setNewDocumentDialogOpen(true)}
               disabled={createDocument.isPending}
-              className="font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all px-3 sm:px-4"
+              className="hidden sm:inline-flex font-ui text-sm rounded-full shadow-soft hover:shadow-elevated transition-all px-3 sm:px-4"
             >
               <Plus className="h-4 w-4 sm:mr-2" />
               <span className="hidden sm:inline">New Document</span>
@@ -467,6 +517,61 @@ const Dashboard = () => {
                 {uploadDocument.isPending ? "Importing..." : "Upload Document"}
               </span>
             </Button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="rounded-full sm:hidden"
+                  aria-label="Open mobile dashboard actions"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 sm:hidden">
+                <DropdownMenuItem
+                  onSelect={() => setNewDocumentDialogOpen(true)}
+                  disabled={createDocument.isPending}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Document
+                </DropdownMenuItem>
+
+                <DropdownMenuItem
+                  onSelect={handleUploadClick}
+                  disabled={uploadDocument.isPending}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  {uploadDocument.isPending
+                    ? "Importing..."
+                    : "Upload Document"}
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={uiMode}
+                  onValueChange={(value) => setUiMode(parseUiMode(value))}
+                >
+                  <DropdownMenuRadioItem value="default">
+                    Default
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="light">
+                    Light
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="dark">
+                    Dark
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={handleSignOut}>
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -506,6 +611,54 @@ const Dashboard = () => {
           </div>
         </div>
       </header>
+
+      <Dialog
+        open={newDocumentDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && createDocument.isPending) return;
+          setNewDocumentDialogOpen(open);
+          if (!open) setNewDocumentName("");
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create New Document</DialogTitle>
+            <DialogDescription>
+              Enter a name or leave it blank to auto-create an untitled document.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Input
+            autoFocus
+            value={newDocumentName}
+            onChange={(e) => setNewDocumentName(e.target.value)}
+            placeholder="Document name (optional)"
+            className="font-ui"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleCreateDocument();
+              }
+            }}
+          />
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setNewDocumentDialogOpen(false)}
+              disabled={createDocument.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateDocument}
+              disabled={createDocument.isPending}
+            >
+              {createDocument.isPending ? "Creating..." : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Content */}
       <main className="container mx-auto px-4 sm:px-6 py-6 sm:py-10">
@@ -676,48 +829,6 @@ const Dashboard = () => {
           />
         </motion.div>
       </main>
-
-      <div className="fixed bottom-5 right-5 z-[110] sm:hidden">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              size="icon"
-              className="h-12 w-12 rounded-full shadow-float"
-              aria-label="Open quick actions"
-            >
-              <MoreHorizontal className="h-5 w-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem
-              onSelect={handleUploadClick}
-              disabled={uploadDocument.isPending}
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              {uploadDocument.isPending ? "Importing..." : "Upload Document"}
-            </DropdownMenuItem>
-
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>Appearance</DropdownMenuLabel>
-            <DropdownMenuRadioGroup
-              value={uiMode}
-              onValueChange={(value) => setUiMode(parseUiMode(value))}
-            >
-              <DropdownMenuRadioItem value="default">
-                Default
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
-            </DropdownMenuRadioGroup>
-
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={handleSignOut}>
-              <LogOut className="h-4 w-4 mr-2" />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
 
       <AnimatePresence>
         {moveFx.visible && (

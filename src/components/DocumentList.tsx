@@ -1330,122 +1330,137 @@ const DocumentList = ({
               transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
               className="w-[94%] max-w-md rounded-2xl border border-border/60 bg-card/95 p-5 shadow-float"
             >
-                <div className="space-y-3">
-                  <div className="relative h-24 rounded-xl border border-border/60 bg-muted/35 overflow-hidden">
-                    <motion.div
-                      className="absolute left-4 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-sm"
-                      animate={
-                        operationFx.phase === "loading"
-                          ? { scale: [1, 1.05, 1], opacity: [0.9, 1, 0.9] }
-                          : { scale: 1, opacity: 1 }
-                      }
-                      transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
-                    >
-                      <FileText className="h-5 w-5 text-primary" />
-                    </motion.div>
+              <div className="space-y-3">
+                <div className="relative h-24 rounded-xl border border-border/60 bg-muted/35 overflow-hidden">
+                  <motion.div
+                    className="absolute left-4 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-sm"
+                    animate={
+                      operationFx.phase === "loading"
+                        ? { scale: [1, 1.05, 1], opacity: [0.9, 1, 0.9] }
+                        : { scale: 1, opacity: 1 }
+                    }
+                    transition={{
+                      repeat: Infinity,
+                      duration: 1.2,
+                      ease: "easeInOut",
+                    }}
+                  >
+                    <FileText className="h-5 w-5 text-primary" />
+                  </motion.div>
 
-                    <motion.div
-                      className="absolute right-4 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-sm"
-                      animate={
-                        operationFx.phase === "loading"
-                          ? { scale: [1, 1.06, 1] }
-                          : { scale: 1 }
-                      }
-                      transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut" }}
-                    >
-                      <FolderInput className="h-5 w-5 text-primary" />
-                    </motion.div>
+                  <motion.div
+                    className="absolute right-4 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-sm"
+                    animate={
+                      operationFx.phase === "loading"
+                        ? { scale: [1, 1.06, 1] }
+                        : { scale: 1 }
+                    }
+                    transition={{
+                      repeat: Infinity,
+                      duration: 1.1,
+                      ease: "easeInOut",
+                    }}
+                  >
+                    <FolderInput className="h-5 w-5 text-primary" />
+                  </motion.div>
 
-                    {operationFx.phase === "loading" && (
-                      <>
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                          <div className="flex items-center gap-1.5">
-                            {[0, 1, 2].map((idx) => (
-                              <motion.span
-                                key={`op-dot-${idx}`}
-                                className="h-2.5 w-2.5 rounded-full bg-primary"
-                                animate={{
-                                  y: [0, -5, 0],
-                                  opacity: [0.4, 1, 0.4],
-                                  scale: [0.9, 1.12, 0.9],
-                                }}
-                                transition={{
-                                  repeat: Infinity,
-                                  duration: 0.75,
-                                  delay: idx * 0.12,
-                                  ease: "easeInOut",
-                                }}
-                              />
-                            ))}
-                          </div>
+                  {operationFx.phase === "loading" && (
+                    <>
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="flex items-center gap-1.5">
+                          {[0, 1, 2].map((idx) => (
+                            <motion.span
+                              key={`op-dot-${idx}`}
+                              className="h-2.5 w-2.5 rounded-full bg-primary"
+                              animate={{
+                                y: [0, -5, 0],
+                                opacity: [0.4, 1, 0.4],
+                                scale: [0.9, 1.12, 0.9],
+                              }}
+                              transition={{
+                                repeat: Infinity,
+                                duration: 0.75,
+                                delay: idx * 0.12,
+                                ease: "easeInOut",
+                              }}
+                            />
+                          ))}
                         </div>
+                      </div>
 
-                        {operationFx.operation === "copy" ? (
-                          <>
-                            {[0, 1, 2].map((idx) => (
-                              <motion.div
-                                key={`clone-track-${idx}`}
-                                className="absolute top-1/2 -translate-y-1/2"
-                                initial={{ x: 18, opacity: 0 }}
-                                animate={{ x: [18, 86, 154], opacity: [0, 1, 0] }}
-                                transition={{
-                                  repeat: Infinity,
-                                  duration: 1.4,
-                                  delay: idx * 0.2,
-                                  ease: "easeInOut",
-                                }}
-                              >
-                                <Copy className="h-4 w-4 text-primary/80" />
-                              </motion.div>
-                            ))}
-                          </>
-                        ) : (
-                          <motion.div
-                            className="absolute top-1/2 -translate-y-1/2"
-                            initial={{ x: 18, opacity: 0.95 }}
-                            animate={{ x: [18, 84, 150], opacity: [0.95, 1, 0.25] }}
-                            transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut" }}
-                          >
-                            <FileText className="h-4 w-4 text-primary/85" />
-                          </motion.div>
-                        )}
-                      </>
-                    )}
+                      {operationFx.operation === "copy" ? (
+                        <>
+                          {[0, 1, 2].map((idx) => (
+                            <motion.div
+                              key={`clone-track-${idx}`}
+                              className="absolute top-1/2 -translate-y-1/2"
+                              initial={{ x: 18, opacity: 0 }}
+                              animate={{ x: [18, 86, 154], opacity: [0, 1, 0] }}
+                              transition={{
+                                repeat: Infinity,
+                                duration: 1.4,
+                                delay: idx * 0.2,
+                                ease: "easeInOut",
+                              }}
+                            >
+                              <Copy className="h-4 w-4 text-primary/80" />
+                            </motion.div>
+                          ))}
+                        </>
+                      ) : (
+                        <motion.div
+                          className="absolute top-1/2 -translate-y-1/2"
+                          initial={{ x: 18, opacity: 0.95 }}
+                          animate={{
+                            x: [18, 84, 150],
+                            opacity: [0.95, 1, 0.25],
+                          }}
+                          transition={{
+                            repeat: Infinity,
+                            duration: 1.1,
+                            ease: "easeInOut",
+                          }}
+                        >
+                          <FileText className="h-4 w-4 text-primary/85" />
+                        </motion.div>
+                      )}
+                    </>
+                  )}
 
-                    {operationFx.phase === "success" && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.85 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="absolute inset-0 flex items-center justify-center"
-                      >
-                        <CheckCircle2 className="h-8 w-8 text-emerald-600" />
-                      </motion.div>
-                    )}
+                  {operationFx.phase === "success" && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.85 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="absolute inset-0 flex items-center justify-center"
+                    >
+                      <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+                    </motion.div>
+                  )}
 
-                    {operationFx.phase === "error" && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.85 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="absolute inset-0 flex items-center justify-center"
-                      >
-                        <XCircle className="h-8 w-8 text-destructive" />
-                      </motion.div>
-                    )}
-                  </div>
+                  {operationFx.phase === "error" && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.85 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="absolute inset-0 flex items-center justify-center"
+                    >
+                      <XCircle className="h-8 w-8 text-destructive" />
+                    </motion.div>
+                  )}
+                </div>
 
-                  <div>
-                    <p className="font-ui text-sm text-muted-foreground">
-                      {operationFx.phase === "loading"
-                        ? operationFx.operation === "copy"
-                          ? "Cloning in progress"
-                          : "Move in progress"
-                        : operationFx.phase === "success"
-                          ? "Operation completed"
-                          : "Operation failed"}
-                    </p>
-                    <p className="font-ui text-sm font-medium text-foreground">
-                      {operationFx.message}
-                    </p>
+                <div>
+                  <p className="font-ui text-sm text-muted-foreground">
+                    {operationFx.phase === "loading"
+                      ? operationFx.operation === "copy"
+                        ? "Cloning in progress"
+                        : "Move in progress"
+                      : operationFx.phase === "success"
+                        ? "Operation completed"
+                        : "Operation failed"}
+                  </p>
+                  <p className="font-ui text-sm font-medium text-foreground">
+                    {operationFx.message}
+                  </p>
                 </div>
               </div>
             </motion.div>
