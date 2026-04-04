@@ -88,42 +88,10 @@ const DocumentEditor = ({
 
   const {
     cursors,
-    broadcastCursorPosition,
     upsertRemoteCursor,
     localCursorIdentity,
     userColor,
   } = useCursors(documentId, editorRef);
-
-  const broadcastCaretFromEditor = useCallback(
-    (instance: TiptapEditor) => {
-      if (!editorRef.current) return;
-
-      const selectionPos = instance.state.selection.to;
-      const maxPos = Math.max(1, instance.state.doc.content.size);
-      const resolvedPos = Math.min(Math.max(1, selectionPos), maxPos);
-
-      try {
-        const coords = instance.view.coordsAtPos(resolvedPos);
-        const containerRect = editorRef.current.getBoundingClientRect();
-
-        broadcastCursorPosition({
-          top: coords.top - containerRect.top,
-          left: coords.left - containerRect.left,
-        });
-      } catch {
-        // Ignore invalid coordinates for transient document states.
-      }
-    },
-    [broadcastCursorPosition],
-  );
-
-  const debouncedBroadcastCaret = useMemo(
-    () =>
-      debounce((instance: TiptapEditor) => {
-        broadcastCaretFromEditor(instance);
-      }, 28),
-    [broadcastCaretFromEditor],
-  );
 
   const getCurrentCaretPos = useCallback((instance: TiptapEditor) => {
     const selectionPos = instance.state.selection.to;
@@ -197,12 +165,13 @@ const DocumentEditor = ({
       versionRef.current += 1;
       const caretPos = getCurrentCaretPos(editor);
       debouncedBroadcast(newContent, versionRef.current, caretPos);
-      debouncedBroadcastCaret(editor);
+      debouncedBroadcastCursorUpdate(caretPos);
       debouncedSave(newContent);
     },
     onSelectionUpdate: ({ editor }) => {
       if (isRemoteUpdateRef.current) return;
-      debouncedBroadcastCaret(editor);
+      const caretPos = getCurrentCaretPos(editor);
+      debouncedBroadcastCursorUpdate(caretPos);
     },
     onTransaction: ({ editor, transaction }) => {
       if (isRemoteUpdateRef.current || !transaction.docChanged) return;
@@ -229,13 +198,35 @@ const DocumentEditor = ({
               version,
               senderId: clientIdRef.current,
               caretPos,
-              cursorUserId: localCursorIdentity?.userId,
+              cursorUserId: clientIdRef.current,
               cursorUsername: localCursorIdentity?.username,
               cursorColor: userColor,
             },
           });
         }
       }, 80),
+    [createRealtimeEventId, localCursorIdentity, userColor],
+  );
+
+  const debouncedBroadcastCursorUpdate = useMemo(
+    () =>
+      debounce((caretPos: number) => {
+        if (!channelRef.current) return;
+
+        channelRef.current.send({
+          type: "broadcast",
+          event: "cursor_update",
+          payload: {
+            messageId: createRealtimeEventId(),
+            sentAt: Date.now(),
+            senderId: clientIdRef.current,
+            caretPos,
+            cursorUserId: clientIdRef.current,
+            cursorUsername: localCursorIdentity?.username,
+            cursorColor: userColor,
+          },
+        });
+      }, 24),
     [createRealtimeEventId, localCursorIdentity, userColor],
   );
 
@@ -255,7 +246,7 @@ const DocumentEditor = ({
           senderId: clientIdRef.current,
           opSeq: opSequenceRef.current,
           caretPos,
-          cursorUserId: localCursorIdentity?.userId,
+          cursorUserId: clientIdRef.current,
           cursorUsername: localCursorIdentity?.username,
           cursorColor: userColor,
           steps,
@@ -285,6 +276,53 @@ const DocumentEditor = ({
 
     const channel = supabase.channel(`doc-sync:${documentId}`);
     channel
+      .on("broadcast", { event: "cursor_update" }, ({ payload }) => {
+        if (!editor || !editorRef.current) return;
+
+        const senderId =
+          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
+        if (senderId === clientIdRef.current) return;
+
+        const payloadCaretPos =
+          typeof payload?.caretPos === "number" ? payload.caretPos : null;
+        if (!payloadCaretPos) return;
+
+        const cursorUserId =
+          typeof payload?.cursorUserId === "string"
+            ? payload.cursorUserId
+            : senderId;
+        const cursorUsername =
+          typeof payload?.cursorUsername === "string"
+            ? payload.cursorUsername
+            : "Collaborator";
+        const cursorColor =
+          typeof payload?.cursorColor === "string"
+            ? payload.cursorColor
+            : "#4ECDC4";
+
+        const safeCaretPos = Math.min(
+          Math.max(1, payloadCaretPos),
+          Math.max(1, editor.state.doc.content.size),
+        );
+
+        try {
+          const caretCoords = editor.view.coordsAtPos(safeCaretPos);
+          const containerRect = editorRef.current.getBoundingClientRect();
+
+          upsertRemoteCursor({
+            userId: cursorUserId,
+            username: cursorUsername,
+            color: cursorColor,
+            position: {
+              top: caretCoords.top - containerRect.top,
+              left: caretCoords.left - containerRect.left,
+            },
+            timestamp: Date.now(),
+          });
+        } catch {
+          // Ignore transient coordinate errors when cursor lands in replaced range.
+        }
+      })
       .on("broadcast", { event: "ops_update" }, ({ payload }) => {
         if (!editor) return;
 
@@ -501,7 +539,7 @@ const DocumentEditor = ({
 
     return () => {
       debouncedBroadcast.cancel();
-      debouncedBroadcastCaret.cancel();
+      debouncedBroadcastCursorUpdate.cancel();
       debouncedSave.cancel();
       channel.unsubscribe();
       channelRef.current = null;
@@ -510,7 +548,7 @@ const DocumentEditor = ({
     documentId,
     editor,
     debouncedBroadcast,
-    debouncedBroadcastCaret,
+    debouncedBroadcastCursorUpdate,
     debouncedSave,
     upsertRemoteCursor,
     localCursorIdentity,
@@ -596,9 +634,9 @@ const DocumentEditor = ({
 
   useEffect(() => {
     return () => {
-      debouncedBroadcastCaret.cancel();
+      debouncedBroadcastCursorUpdate.cancel();
     };
-  }, [debouncedBroadcastCaret]);
+  }, [debouncedBroadcastCursorUpdate]);
 
   // Keyboard shortcuts
   useEffect(() => {
