@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor as TiptapEditor } from "@tiptap/core";
+import { Step } from "@tiptap/pm/transform";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import TextAlign from "@tiptap/extension-text-align";
@@ -75,7 +76,9 @@ const DocumentEditor = ({
   const lastLocalEditAtRef = useRef(0);
   const processedMessageIdsRef = useRef<Set<string>>(new Set());
   const versionRef = useRef(0);
+  const opSequenceRef = useRef(0);
   const senderVersionRef = useRef<Record<string, number>>({});
+  const senderOpSequenceRef = useRef<Record<string, number>>({});
   const senderTimestampRef = useRef<Record<string, number>>({});
   const clientIdRef = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -201,6 +204,14 @@ const DocumentEditor = ({
       if (isRemoteUpdateRef.current) return;
       debouncedBroadcastCaret(editor);
     },
+    onTransaction: ({ editor, transaction }) => {
+      if (isRemoteUpdateRef.current || !transaction.docChanged) return;
+
+      const steps = transaction.steps.map((step) => step.toJSON());
+      if (!steps.length) return;
+
+      broadcastOpsUpdate(editor, steps);
+    },
   });
 
   // Debounced broadcast for real-time sync (fast - 80ms)
@@ -228,6 +239,32 @@ const DocumentEditor = ({
     [createRealtimeEventId, localCursorIdentity, userColor],
   );
 
+  const broadcastOpsUpdate = useCallback(
+    (instance: TiptapEditor, steps: unknown[]) => {
+      if (!channelRef.current || !steps.length) return;
+
+      const caretPos = getCurrentCaretPos(instance);
+      opSequenceRef.current += 1;
+
+      channelRef.current.send({
+        type: "broadcast",
+        event: "ops_update",
+        payload: {
+          messageId: createRealtimeEventId(),
+          sentAt: Date.now(),
+          senderId: clientIdRef.current,
+          opSeq: opSequenceRef.current,
+          caretPos,
+          cursorUserId: localCursorIdentity?.userId,
+          cursorUsername: localCursorIdentity?.username,
+          cursorColor: userColor,
+          steps,
+        },
+      });
+    },
+    [createRealtimeEventId, getCurrentCaretPos, localCursorIdentity, userColor],
+  );
+
   // Debounced save to parent (slower - 500ms for perf)
   const debouncedSave = useMemo(
     () =>
@@ -248,6 +285,100 @@ const DocumentEditor = ({
 
     const channel = supabase.channel(`doc-sync:${documentId}`);
     channel
+      .on("broadcast", { event: "ops_update" }, ({ payload }) => {
+        if (!editor) return;
+
+        const senderId =
+          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
+        const incomingTimestamp =
+          typeof payload?.sentAt === "number" ? payload.sentAt : 0;
+        const incomingMessageId =
+          typeof payload?.messageId === "string" ? payload.messageId : null;
+        const incomingOpSeq =
+          typeof payload?.opSeq === "number" ? payload.opSeq : 0;
+        const incomingSteps = Array.isArray(payload?.steps) ? payload.steps : [];
+
+        if (senderId === clientIdRef.current) return;
+        if (!incomingSteps.length) return;
+
+        if (incomingMessageId) {
+          if (processedMessageIdsRef.current.has(incomingMessageId)) return;
+          processedMessageIdsRef.current.add(incomingMessageId);
+
+          if (processedMessageIdsRef.current.size > 400) {
+            const ids = Array.from(processedMessageIdsRef.current);
+            processedMessageIdsRef.current = new Set(ids.slice(-200));
+          }
+        }
+
+        const lastSeenOpSeq = senderOpSequenceRef.current[senderId] ?? -1;
+        const lastSeenTimestamp = senderTimestampRef.current[senderId] ?? -1;
+
+        if (incomingTimestamp < lastSeenTimestamp) return;
+        if (incomingOpSeq <= lastSeenOpSeq) return;
+
+        try {
+          isRemoteUpdateRef.current = true;
+
+          let tr = editor.state.tr;
+          for (const stepJson of incomingSteps) {
+            const parsedStep = Step.fromJSON(editor.state.schema, stepJson);
+            tr = tr.step(parsedStep);
+          }
+
+          tr.setMeta("addToHistory", false);
+
+          if (tr.docChanged) {
+            editor.view.dispatch(tr);
+            setLocalContent(editor.getHTML());
+          }
+
+          const payloadCaretPos =
+            typeof payload?.caretPos === "number" ? payload.caretPos : null;
+          const cursorUserId =
+            typeof payload?.cursorUserId === "string"
+              ? payload.cursorUserId
+              : senderId;
+          const cursorUsername =
+            typeof payload?.cursorUsername === "string"
+              ? payload.cursorUsername
+              : "Collaborator";
+          const cursorColor =
+            typeof payload?.cursorColor === "string"
+              ? payload.cursorColor
+              : "#4ECDC4";
+
+          if (payloadCaretPos && editorRef.current) {
+            const safeCaretPos = Math.min(
+              Math.max(1, payloadCaretPos),
+              Math.max(1, editor.state.doc.content.size),
+            );
+
+            const caretCoords = editor.view.coordsAtPos(safeCaretPos);
+            const containerRect = editorRef.current.getBoundingClientRect();
+
+            upsertRemoteCursor({
+              userId: cursorUserId,
+              username: cursorUsername,
+              color: cursorColor,
+              position: {
+                top: caretCoords.top - containerRect.top,
+                left: caretCoords.left - containerRect.left,
+              },
+              timestamp: Date.now(),
+            });
+          }
+
+          senderOpSequenceRef.current[senderId] = incomingOpSeq;
+          senderTimestampRef.current[senderId] = incomingTimestamp;
+          pendingContentRef.current = null;
+        } catch {
+          // If operation application fails due to schema drift,
+          // the existing snapshot update handler will reconcile state.
+        } finally {
+          isRemoteUpdateRef.current = false;
+        }
+      })
       .on("broadcast", { event: "content_update" }, ({ payload }) => {
         if (!editor) return;
         if (typeof payload?.content !== "string") return;
