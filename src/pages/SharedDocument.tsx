@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/components/ui/use-toast";
 import DocumentEditor from "@/components/DocumentEditor";
@@ -21,7 +21,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { verifyPassword } from "@/utils/password-utils";
-import { debounce } from "lodash";
+import * as Y from "yjs";
+import { SupabaseProvider } from "@/lib/SupabaseProvider";
 
 interface Presence {
   user: {
@@ -74,7 +75,6 @@ const SharedDocument = () => {
   const { token } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [documentBorderStyle, setDocumentBorderStyle] =
@@ -83,22 +83,30 @@ const SharedDocument = () => {
   const [permissionLevel, setPermissionLevel] = useState<string | null>(null);
   const [activeUsers, setActiveUsers] = useState<Presence[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userName, setUserName] = useState("Guest");
   const [password, setPassword] = useState("");
   const [isPasswordProtected, setIsPasswordProtected] = useState(false);
   const [isPasswordVerified, setIsPasswordVerified] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [passwordError, setPasswordError] = useState("");
-  const hasHydratedFromServerRef = useRef(false);
+  const hasHydratedRef = useRef(false);
 
-  // ── Sync guards ──
-  const isApplyingRemoteRef = useRef(false);
-  const lastLocalSaveAtRef = useRef<string | null>(null);
+  // ── Yjs ──
+  const ydocRef = useRef<Y.Doc | null>(null);
+  const providerRef = useRef<SupabaseProvider | null>(null);
 
   // Check if user is authenticated
   useEffect(() => {
     const checkAuth = async () => {
       const { data } = await supabase.auth.getUser();
       setIsAuthenticated(!!data.user);
+      if (data.user) {
+        setUserName(
+          data.user.email?.split("@")[0] || "Anonymous",
+        );
+      } else {
+        setUserName(`Guest-${Math.random().toString(36).slice(-4)}`);
+      }
     };
     checkAuth();
   }, []);
@@ -130,10 +138,9 @@ const SharedDocument = () => {
     enabled: !!token,
   });
 
-  // Update state when share data is fetched (one-time hydration)
+  // Hydrate state when share data is fetched AND verified (once)
   useEffect(() => {
-    if (shareData && isPasswordVerified && !hasHydratedFromServerRef.current) {
-      isApplyingRemoteRef.current = true;
+    if (shareData && isPasswordVerified && !hasHydratedRef.current) {
       setDocumentId(shareData.document_id);
       setPermissionLevel(shareData.permission_level);
       setTitle(shareData.document.title);
@@ -141,63 +148,25 @@ const SharedDocument = () => {
       setDocumentBorderStyle(
         shareData.document.document_border_style || "none",
       );
-      hasHydratedFromServerRef.current = true;
-      requestAnimationFrame(() => {
-        isApplyingRemoteRef.current = false;
-      });
+      hasHydratedRef.current = true;
     }
   }, [shareData, isPasswordVerified]);
 
-  // Set up real-time document subscription — apply remote changes directly
+  // ── Create Yjs provider once we have the document ID ──
   useEffect(() => {
-    if (!documentId || !isPasswordVerified) return;
+    if (!documentId || providerRef.current) return;
 
-    const channel = supabase
-      .channel(`pg-shared:${documentId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "documents",
-          filter: `id=eq.${documentId}`,
-        },
-        (payload) => {
-          const newRecord = payload.new as {
-            title: string;
-            content: string | null;
-            document_border_style: string | null;
-            updated_at: string;
-          };
-
-          // Skip self-originated updates
-          if (
-            lastLocalSaveAtRef.current &&
-            newRecord.updated_at === lastLocalSaveAtRef.current
-          ) {
-            return;
-          }
-
-          isApplyingRemoteRef.current = true;
-          setTitle(newRecord.title);
-          setContent(newRecord.content || "");
-          setDocumentBorderStyle(
-            (newRecord.document_border_style as DocumentBorderStyle | null) ||
-              "none",
-          );
-          requestAnimationFrame(() => {
-            isApplyingRemoteRef.current = false;
-          });
-        },
-      )
-      .subscribe();
+    ydocRef.current = new Y.Doc();
+    providerRef.current = new SupabaseProvider(documentId, ydocRef.current);
 
     return () => {
-      supabase.removeChannel(channel);
+      providerRef.current?.destroy();
+      providerRef.current = null;
+      ydocRef.current = null;
     };
-  }, [documentId, isPasswordVerified]);
+  }, [documentId]);
 
-  // Set up presence channel for collaborative features
+  // ── Presence channel ──
   useEffect(() => {
     if (!documentId || !isPasswordVerified) return;
     let presenceChannel: ReturnType<typeof supabase.channel>;
@@ -253,53 +222,8 @@ const SharedDocument = () => {
     };
   }, [documentId, isPasswordVerified]);
 
-  const updateDocument = useMutation({
-    mutationFn: async ({
-      title,
-      content,
-      documentBorderStyle,
-    }: {
-      title: string;
-      content: string;
-      documentBorderStyle: DocumentBorderStyle;
-    }) => {
-      if (!documentId) throw new Error("Document ID is missing");
-
-      const updatedAt = new Date().toISOString();
-      lastLocalSaveAtRef.current = updatedAt;
-
-      const { error } = await supabase
-        .from("documents")
-        .update({
-          title,
-          content,
-          document_border_style: documentBorderStyle,
-          updated_at: updatedAt,
-        })
-        .eq("id", documentId);
-
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast({
-        title: "Success",
-        description: "Document saved successfully",
-      });
-    },
-    onError: () => {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to save document",
-      });
-    },
-  });
-
   const handleContentUpdate = (newContent: string) => {
-    if (permissionLevel === "view") {
-      return;
-    }
-
+    if (permissionLevel === "view") return;
     setContent(newContent);
   };
 
@@ -313,62 +237,34 @@ const SharedDocument = () => {
       return;
     }
 
-    updateDocument.mutate({ title, content, documentBorderStyle });
-    if (shareData?.document_id) snapshotVersion(shareData.document_id, content);
-  };
-
-  const debouncedAutoSave = useMemo(
-    () =>
-      debounce(
-        async (
-          nextTitle: string,
-          nextContent: string,
-          nextBorder: DocumentBorderStyle,
-        ) => {
-          const updatedAt = new Date().toISOString();
-          lastLocalSaveAtRef.current = updatedAt;
-
-          const { error } = await supabase
-            .from("documents")
-            .update({
-              title: nextTitle,
-              content: nextContent,
-              document_border_style: nextBorder,
-              updated_at: updatedAt,
-            })
-            .eq("id", documentId);
-
+    // Title save
+    if (documentId) {
+      supabase
+        .from("documents")
+        .update({
+          title,
+          document_border_style: documentBorderStyle,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", documentId)
+        .then(({ error }) => {
           if (error) {
-            console.error("Auto-save failed:", error);
+            toast({
+              variant: "destructive",
+              title: "Error",
+              description: "Failed to save document",
+            });
+          } else {
+            toast({
+              title: "Success",
+              description: "Document saved successfully",
+            });
           }
-        },
-        900,
-      ),
-    [documentId],
-  );
+        });
 
-  useEffect(() => {
-    return () => {
-      debouncedAutoSave.cancel();
-    };
-  }, [debouncedAutoSave]);
-
-  // Only auto-save when changes are local (not from remote updates)
-  useEffect(() => {
-    if (!documentId || permissionLevel !== "edit") return;
-    if (!isPasswordVerified || !hasHydratedFromServerRef.current) return;
-    if (isApplyingRemoteRef.current) return;
-
-    debouncedAutoSave(title, content, documentBorderStyle);
-  }, [
-    documentId,
-    permissionLevel,
-    isPasswordVerified,
-    title,
-    content,
-    documentBorderStyle,
-    debouncedAutoSave,
-  ]);
+      snapshotVersion(documentId, content);
+    }
+  };
 
   const handleVerifyPassword = async () => {
     if (!shareData || !password) return;
@@ -383,7 +279,6 @@ const SharedDocument = () => {
       );
 
       if (isValid) {
-        isApplyingRemoteRef.current = true;
         setIsPasswordVerified(true);
         setDocumentId(shareData.document_id);
         setPermissionLevel(shareData.permission_level);
@@ -392,10 +287,7 @@ const SharedDocument = () => {
         setDocumentBorderStyle(
           shareData.document.document_border_style || "none",
         );
-        hasHydratedFromServerRef.current = true;
-        requestAnimationFrame(() => {
-          isApplyingRemoteRef.current = false;
-        });
+        hasHydratedRef.current = true;
       } else {
         setPasswordError("Incorrect password");
       }
@@ -555,19 +447,15 @@ const SharedDocument = () => {
             </Button>
           )}
           {permissionLevel === "edit" && (
-            <Button
-              size="sm"
-              onClick={handleSave}
-              disabled={updateDocument.isPending}
-            >
-              {updateDocument.isPending ? "Saving..." : "Save"}
+            <Button size="sm" onClick={handleSave}>
+              Save
             </Button>
           )}
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-8">
         <div className="lg:col-span-2 min-w-0">
-          {documentId && (
+          {documentId && ydocRef.current && providerRef.current && (
             <DocumentEditor
               content={content}
               onUpdate={handleContentUpdate}
@@ -575,6 +463,9 @@ const SharedDocument = () => {
               isReadOnly={permissionLevel !== "edit"}
               initialDocumentBorderStyle={documentBorderStyle}
               onDocumentBorderStyleChange={setDocumentBorderStyle}
+              ydoc={ydocRef.current}
+              provider={providerRef.current}
+              userName={userName}
             />
           )}
         </div>

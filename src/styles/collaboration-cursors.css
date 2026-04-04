@@ -1,0 +1,97 @@
+/* ── Google Docs-style collaboration cursors ── */
+
+/* Remote cursor caret line — thin colored vertical bar */
+.collaboration-cursor__caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid;
+  border-right: 0;
+  word-break: normal;
+  pointer-events: none;
+  animation: cursorFadeIn 0.15s ease-out;
+}
+
+@keyframes cursorFadeIn {
+  from {
+    opacity: 0;
+    transform: scaleY(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+/* Name label flag above cursor */
+.collaboration-cursor__label {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  line-height: 1;
+  padding: 2px 6px 2px 6px;
+  border-radius: 6px 6px 6px 0;
+  color: #fff;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  animation: labelSlideIn 0.2s ease-out 0.05s forwards;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+@keyframes labelSlideIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Remote user's text selection highlight */
+.ProseMirror .selection {
+  display: inline;
+}
+
+/* Colored selection decorations from y-prosemirror */
+.yRemoteSelection {
+  background-color: var(--cursor-color, rgba(78, 205, 196, 0.28));
+  border-radius: 2px;
+}
+
+.yRemoteSelectionHead {
+  position: absolute;
+  border-left: 2px solid var(--cursor-color, #4ecdc4);
+  border-top: none;
+  border-bottom: none;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* Smooth transitions for cursor movement */
+.collaboration-cursor__caret,
+.yRemoteSelectionHead {
+  transition: left 0.08s ease-out, top 0.08s ease-out;
+}
+
+/* Subtle pulse animation on the cursor to make it feel alive */
+.collaboration-cursor__caret::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 2px;
+  height: 100%;
+  background: inherit;
+  animation: cursorPulse 1.2s ease-in-out infinite;
+  opacity: 0;
+}
+
+@keyframes cursorPulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 0.4; }
+}

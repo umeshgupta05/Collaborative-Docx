@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,6 +14,8 @@ import { snapshotVersion } from "@/utils/version-utils";
 import SEO from "@/components/SEO";
 import { motion } from "framer-motion";
 import type { Tables } from "@/integrations/supabase/types";
+import * as Y from "yjs";
+import { SupabaseProvider } from "@/lib/SupabaseProvider";
 import { debounce } from "lodash";
 
 interface Presence {
@@ -47,29 +49,35 @@ const Document = () => {
   const [saved, setSaved] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [showMobileComments, setShowMobileComments] = useState(false);
+  const [userName, setUserName] = useState("Anonymous");
 
-  // ── Sync guards ──
-  // Tracks whether the initial hydration from server has happened.
-  // Prevents auto-save from firing on the very first render with empty state.
   const hasHydratedRef = useRef(false);
-  // Tracks whether we are currently applying a remote/server update to local state.
-  // When true, the auto-save effect must NOT write back to the DB.
-  const isApplyingRemoteRef = useRef(false);
-  // Timestamp of our last local save. Used to ignore postgres_changes events
-  // that were triggered by our own writes.
-  const lastLocalSaveAtRef = useRef<string | null>(null);
 
-  // Wait for auth session to restore before doing anything
+  // ── Yjs document & provider (stable for the lifetime of this page) ──
+  const ydocRef = useRef<Y.Doc | null>(null);
+  const providerRef = useRef<SupabaseProvider | null>(null);
+
+  if (!ydocRef.current && id) {
+    ydocRef.current = new Y.Doc();
+  }
+
+  // Wait for auth session
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) {
         navigate("/auth");
       } else {
         setSessionReady(true);
+        setUserName(
+          session.user.user_metadata?.full_name ||
+            session.user.email?.split("@")[0] ||
+            "Anonymous",
+        );
       }
     });
   }, [navigate]);
 
+  // Fetch document metadata (title, tags, border, folder_id)
   const {
     data: document,
     isLoading,
@@ -87,7 +95,6 @@ const Document = () => {
     },
     enabled: !!id && sessionReady,
     retry: 1,
-    // Don't refetch aggressively — we rely on real-time channels for live sync
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
@@ -96,77 +103,36 @@ const Document = () => {
     ? `/dashboard?folder=${document.folder_id}`
     : "/dashboard";
 
-  // ── Initial hydration from server (runs ONCE when document first loads) ──
+  // Hydrate title/tags/border from DB (once)
   useEffect(() => {
     if (!document || hasHydratedRef.current) return;
 
-    const typedDocument = document as DocumentRow;
-    isApplyingRemoteRef.current = true;
-    setTitle(typedDocument.title);
-    setContent(typedDocument.content || "");
+    const typedDoc = document as DocumentRow;
+    setTitle(typedDoc.title);
+    setContent(typedDoc.content || "");
     setDocumentBorderStyle(
-      (typedDocument.document_border_style as DocumentBorderStyle | null) ||
-        "none",
+      (typedDoc.document_border_style as DocumentBorderStyle | null) || "none",
     );
-    setTags(typedDocument.tags || []);
+    setTags(typedDoc.tags || []);
     hasHydratedRef.current = true;
-
-    // Use requestAnimationFrame to ensure state has settled before
-    // allowing auto-save to run.
-    requestAnimationFrame(() => {
-      isApplyingRemoteRef.current = false;
-    });
   }, [document]);
 
-  // ── Real-time document subscription (fallback for cold-start / tab refocus) ──
-  // Only applies remote changes if they did NOT originate from this client.
+  // ── Create SupabaseProvider once the doc ID is stable ──
   useEffect(() => {
-    if (!id) return;
+    if (!id || !ydocRef.current) return;
 
-    const channel = supabase
-      .channel(`pg-doc:${id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "documents",
-          filter: `id=eq.${id}`,
-        },
-        (payload) => {
-          const newRecord = payload.new as DocumentRow;
+    // Don't recreate if already exists for this doc
+    if (providerRef.current) return;
 
-          // Skip if this update was from our own save
-          if (
-            lastLocalSaveAtRef.current &&
-            newRecord.updated_at === lastLocalSaveAtRef.current
-          ) {
-            return;
-          }
-
-          // Apply the remote update to local state
-          isApplyingRemoteRef.current = true;
-          setTitle(newRecord.title);
-          setContent(newRecord.content || "");
-          setDocumentBorderStyle(
-            (newRecord.document_border_style as DocumentBorderStyle | null) ||
-              "none",
-          );
-          setTags(newRecord.tags || []);
-
-          requestAnimationFrame(() => {
-            isApplyingRemoteRef.current = false;
-          });
-        },
-      )
-      .subscribe();
+    providerRef.current = new SupabaseProvider(id, ydocRef.current);
 
     return () => {
-      supabase.removeChannel(channel);
+      providerRef.current?.destroy();
+      providerRef.current = null;
     };
   }, [id]);
 
-  // ── Presence channel ──
+  // ── Presence channel (user avatars in header) ──
   useEffect(() => {
     let presenceChannel: ReturnType<typeof supabase.channel>;
     const setupPresence = async () => {
@@ -174,6 +140,7 @@ const Document = () => {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
+
       presenceChannel = supabase.channel(`presence:${id}`, {
         config: { presence: { key: user.id } },
       });
@@ -204,7 +171,6 @@ const Document = () => {
                 lastActive: new Date().toISOString(),
               });
             };
-
             await trackPresence();
 
             const heartbeat = setInterval(trackPresence, 15000);
@@ -228,30 +194,24 @@ const Document = () => {
     };
   }, [id]);
 
-  // ── Manual save ──
+  // ── Save title/tags/border (manual save) ──
   const updateDocument = useMutation({
     mutationFn: async ({
       title,
-      content,
-      documentBorderStyle,
       tags,
+      documentBorderStyle,
     }: {
       title: string;
-      content: string;
-      documentBorderStyle: DocumentBorderStyle;
       tags: string[];
+      documentBorderStyle: DocumentBorderStyle;
     }) => {
-      const updatedAt = new Date().toISOString();
-      lastLocalSaveAtRef.current = updatedAt;
-
       const { error } = await supabase
         .from("documents")
         .update({
           title,
-          content,
           tags,
           document_border_style: documentBorderStyle,
-          updated_at: updatedAt,
+          updated_at: new Date().toISOString(),
         })
         .eq("id", id);
       if (error) throw error;
@@ -270,56 +230,41 @@ const Document = () => {
   });
 
   const handleSave = () => {
-    updateDocument.mutate({ title, content, tags, documentBorderStyle });
+    updateDocument.mutate({ title, tags, documentBorderStyle });
     if (id) snapshotVersion(id, content);
   };
 
-  // ── Auto-save (debounced) ──
-  const debouncedAutoSave = useMemo(
+  // Auto-save title/tags/border
+  const debouncedMetaSave = useMemo(
     () =>
       debounce(
-        async (
-          nextTitle: string,
-          nextContent: string,
-          nextTags: string[],
-          nextBorder: DocumentBorderStyle,
-        ) => {
-          const updatedAt = new Date().toISOString();
-          lastLocalSaveAtRef.current = updatedAt;
-
-          const { error } = await supabase
+        (t: string, tg: string[], b: DocumentBorderStyle) => {
+          supabase
             .from("documents")
             .update({
-              title: nextTitle,
-              content: nextContent,
-              tags: nextTags,
-              document_border_style: nextBorder,
-              updated_at: updatedAt,
+              title: t,
+              tags: tg,
+              document_border_style: b,
+              updated_at: new Date().toISOString(),
             })
-            .eq("id", id);
-
-          if (error) {
-            console.error("Auto-save failed:", error);
-          }
+            .eq("id", id)
+            .then(({ error }) => {
+              if (error) console.error("Meta auto-save failed:", error);
+            });
         },
-        900,
+        1200,
       ),
     [id],
   );
 
   useEffect(() => {
-    return () => {
-      debouncedAutoSave.cancel();
-    };
-  }, [debouncedAutoSave]);
+    return () => debouncedMetaSave?.cancel?.();
+  }, [debouncedMetaSave]);
 
-  // Only auto-save when changes are local (not from remote updates)
   useEffect(() => {
     if (!id || !hasHydratedRef.current) return;
-    if (isApplyingRemoteRef.current) return;
-
-    debouncedAutoSave(title, content, tags, documentBorderStyle);
-  }, [id, title, content, documentBorderStyle, tags, debouncedAutoSave]);
+    debouncedMetaSave(title, tags, documentBorderStyle);
+  }, [title, tags, documentBorderStyle, debouncedMetaSave, id]);
 
   const addTag = () => {
     const normalized = tagInput.trim().toLowerCase();
@@ -335,7 +280,7 @@ const Document = () => {
   const isIdle = (lastActive: string) =>
     Date.now() - new Date(lastActive).getTime() > 30000;
 
-  // Ctrl+S to save manually
+  // Ctrl+S
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
@@ -435,7 +380,6 @@ const Document = () => {
               </div>
             )}
 
-            {/* Mobile comments toggle */}
             <Button
               variant="ghost"
               size="sm"
@@ -508,15 +452,19 @@ const Document = () => {
       >
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 sm:gap-8 max-w-6xl mx-auto">
           <div className="min-w-0">
-            <DocumentEditor
-              content={content}
-              onUpdate={setContent}
-              documentId={id!}
-              initialDocumentBorderStyle={documentBorderStyle}
-              onDocumentBorderStyleChange={setDocumentBorderStyle}
-            />
+            {ydocRef.current && providerRef.current && (
+              <DocumentEditor
+                content={content}
+                onUpdate={setContent}
+                documentId={id!}
+                initialDocumentBorderStyle={documentBorderStyle}
+                onDocumentBorderStyleChange={setDocumentBorderStyle}
+                ydoc={ydocRef.current}
+                provider={providerRef.current}
+                userName={userName}
+              />
+            )}
           </div>
-          {/* Mobile comments panel */}
           {showMobileComments && (
             <div className="lg:hidden">
               <Comments documentId={id!} />

@@ -1,7 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import type { Editor as TiptapEditor } from "@tiptap/core";
-import { Step } from "@tiptap/pm/transform";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import TextAlign from "@tiptap/extension-text-align";
@@ -16,11 +14,11 @@ import Color from "@tiptap/extension-color";
 import Superscript from "@tiptap/extension-superscript";
 import Subscript from "@tiptap/extension-subscript";
 import FocusExtension from "@tiptap/extension-focus";
+import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
+import * as Y from "yjs";
 import { debounce } from "lodash";
-import { supabase } from "@/integrations/supabase/client";
 import EditorToolbar from "./EditorToolbar";
-import RemoteCursors from "./RemoteCursors";
-import { useCursors } from "@/hooks/useCursors";
 import Link from "@tiptap/extension-link";
 import Table from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
@@ -35,8 +33,16 @@ import KeyboardShortcuts from "./KeyboardShortcuts";
 import WordFrequency from "./WordFrequency";
 import VersionHistory from "./VersionHistory";
 import LineHeight from "@/extensions/line-height";
+import type { SupabaseProvider } from "@/lib/SupabaseProvider";
+import "@/styles/collaboration-cursors.css";
 
 type DocumentBorderStyle = "none" | "thin" | "medium" | "thick" | "accent";
+
+const CURSOR_COLORS = [
+  "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4",
+  "#9B59B6", "#3498DB", "#E67E22", "#1ABC9C",
+  "#E74C3C", "#2ECC71", "#F39C12", "#8E44AD",
+];
 
 interface DocumentEditorProps {
   content: string;
@@ -45,6 +51,11 @@ interface DocumentEditorProps {
   isReadOnly?: boolean;
   initialDocumentBorderStyle?: DocumentBorderStyle;
   onDocumentBorderStyleChange?: (style: DocumentBorderStyle) => void;
+  // Yjs collaboration props
+  ydoc: Y.Doc;
+  provider: SupabaseProvider;
+  userName: string;
+  userColor?: string;
 }
 
 const DocumentEditor = ({
@@ -54,6 +65,10 @@ const DocumentEditor = ({
   isReadOnly = false,
   initialDocumentBorderStyle = "none",
   onDocumentBorderStyleChange,
+  ydoc,
+  provider,
+  userName,
+  userColor,
 }: DocumentEditorProps) => {
   const [localContent, setLocalContent] = useState(content);
   const [isFocusMode, setIsFocusMode] = useState(false);
@@ -69,50 +84,25 @@ const DocumentEditor = ({
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showWordFrequency, setShowWordFrequency] = useState(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
-  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
-  const isRemoteUpdateRef = useRef(false);
-  const pendingContentRef = useRef<string | null>(null);
-  const lastLocalEditAtRef = useRef(0);
-  const processedMessageIdsRef = useRef<Set<string>>(new Set());
-  const versionRef = useRef(0);
-  const opSequenceRef = useRef(0);
-  const senderVersionRef = useRef<Record<string, number>>({});
-  const senderOpSequenceRef = useRef<Record<string, number>>({});
-  const senderTimestampRef = useRef<Record<string, number>>({});
-  const clientIdRef = useRef(
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
+  const hasSetInitialContent = useRef(false);
 
-  const {
-    cursors,
-    upsertRemoteCursor,
-    localCursorIdentity,
-    userColor,
-  } = useCursors(documentId, editorRef);
-
-  const getCurrentCaretPos = useCallback((instance: TiptapEditor) => {
-    const selectionPos = instance.state.selection.to;
-    const maxPos = Math.max(1, instance.state.doc.content.size);
-    return Math.min(Math.max(1, selectionPos), maxPos);
-  }, []);
-
-  const createRealtimeEventId = useCallback(() => {
-    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-      return crypto.randomUUID();
+  // Determine a stable color for this user
+  const resolvedColor = useMemo(() => {
+    if (userColor) return userColor;
+    // Derive a consistent color from the userName
+    let hash = 0;
+    for (let i = 0; i < userName.length; i++) {
+      hash = userName.charCodeAt(i) + ((hash << 5) - hash);
     }
-
-    return `${clientIdRef.current}-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2)}`;
-  }, []);
+    return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
+  }, [userName, userColor]);
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        history: { depth: 200, newGroupDelay: 250 },
+        // Disable built-in history — Yjs provides its own undo/redo
+        history: false,
       }),
       Underline,
       TextAlign.configure({
@@ -148,8 +138,18 @@ const DocumentEditor = ({
       TableCell,
       TableHeader,
       LineHeight,
+      // ── Yjs Collaboration ──
+      Collaboration.configure({
+        document: ydoc,
+      }),
+      CollaborationCursor.configure({
+        provider: provider,
+        user: {
+          name: userName,
+          color: resolvedColor,
+        },
+      }),
     ],
-    content: localContent,
     editable: !isReadOnly,
     editorProps: {
       attributes: {
@@ -158,458 +158,50 @@ const DocumentEditor = ({
       },
     },
     onUpdate: ({ editor }) => {
-      if (isRemoteUpdateRef.current) return;
-      const newContent = editor.getHTML();
-      lastLocalEditAtRef.current = Date.now();
-      setLocalContent(newContent);
-      versionRef.current += 1;
-      const caretPos = getCurrentCaretPos(editor);
-      debouncedBroadcast(newContent, versionRef.current, caretPos);
-      debouncedBroadcastCursorUpdate(caretPos);
-      debouncedSave(newContent);
-    },
-    onSelectionUpdate: ({ editor }) => {
-      if (isRemoteUpdateRef.current) return;
-      const caretPos = getCurrentCaretPos(editor);
-      debouncedBroadcastCursorUpdate(caretPos);
-    },
-    onTransaction: ({ editor, transaction }) => {
-      if (isRemoteUpdateRef.current || !transaction.docChanged) return;
-
-      const steps = transaction.steps.map((step) => step.toJSON());
-      if (!steps.length) return;
-
-      broadcastOpsUpdate(editor, steps);
+      const html = editor.getHTML();
+      setLocalContent(html);
+      onUpdate(html);
+      debouncedPersist(html);
     },
   });
 
-  // Debounced broadcast for real-time sync (fast - 80ms)
-  const debouncedBroadcast = useMemo(
+  // Debounced HTML persistence (keeps the `content` column in sync for
+  // downloads, previews, and non-Yjs consumers)
+  const debouncedPersist = useMemo(
     () =>
-      debounce((newContent: string, version: number, caretPos: number) => {
-        if (channelRef.current) {
-          channelRef.current.send({
-            type: "broadcast",
-            event: "content_update",
-            payload: {
-              messageId: createRealtimeEventId(),
-              sentAt: Date.now(),
-              content: newContent,
-              version,
-              senderId: clientIdRef.current,
-              caretPos,
-              cursorUserId: clientIdRef.current,
-              cursorUsername: localCursorIdentity?.username,
-              cursorColor: userColor,
-            },
-          });
-        }
-      }, 80),
-    [createRealtimeEventId, localCursorIdentity, userColor],
-  );
-
-  const debouncedBroadcastCursorUpdate = useMemo(
-    () =>
-      debounce((caretPos: number) => {
-        if (!channelRef.current) return;
-
-        channelRef.current.send({
-          type: "broadcast",
-          event: "cursor_update",
-          payload: {
-            messageId: createRealtimeEventId(),
-            sentAt: Date.now(),
-            senderId: clientIdRef.current,
-            caretPos,
-            cursorUserId: clientIdRef.current,
-            cursorUsername: localCursorIdentity?.username,
-            cursorColor: userColor,
-          },
-        });
-      }, 24),
-    [createRealtimeEventId, localCursorIdentity, userColor],
-  );
-
-  const broadcastOpsUpdate = useCallback(
-    (instance: TiptapEditor, steps: unknown[]) => {
-      if (!channelRef.current || !steps.length) return;
-
-      const caretPos = getCurrentCaretPos(instance);
-      opSequenceRef.current += 1;
-
-      channelRef.current.send({
-        type: "broadcast",
-        event: "ops_update",
-        payload: {
-          messageId: createRealtimeEventId(),
-          sentAt: Date.now(),
-          senderId: clientIdRef.current,
-          opSeq: opSequenceRef.current,
-          caretPos,
-          cursorUserId: clientIdRef.current,
-          cursorUsername: localCursorIdentity?.username,
-          cursorColor: userColor,
-          steps,
-        },
-      });
-    },
-    [createRealtimeEventId, getCurrentCaretPos, localCursorIdentity, userColor],
-  );
-
-  // Debounced save to parent (slower - 500ms for perf)
-  const debouncedSave = useMemo(
-    () =>
-      debounce((newContent: string) => {
+      debounce((html: string) => {
         setIsSaving(true);
-        onUpdate(newContent);
-        setTimeout(() => {
+        provider.persistWithHTML(html).then(() => {
           setIsSaving(false);
           setLastSaved(new Date());
-        }, 300);
-      }, 500),
-    [onUpdate],
+        });
+      }, 2000),
+    [provider],
   );
 
-  // Real-time channel for receiving remote edits
   useEffect(() => {
-    if (!documentId) return;
-
-    const channel = supabase.channel(`doc-sync:${documentId}`);
-    channel
-      .on("broadcast", { event: "cursor_update" }, ({ payload }) => {
-        if (!editor || !editorRef.current) return;
-
-        const senderId =
-          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
-        if (senderId === clientIdRef.current) return;
-
-        const payloadCaretPos =
-          typeof payload?.caretPos === "number" ? payload.caretPos : null;
-        if (!payloadCaretPos) return;
-
-        const cursorUserId =
-          typeof payload?.cursorUserId === "string"
-            ? payload.cursorUserId
-            : senderId;
-        const cursorUsername =
-          typeof payload?.cursorUsername === "string"
-            ? payload.cursorUsername
-            : "Collaborator";
-        const cursorColor =
-          typeof payload?.cursorColor === "string"
-            ? payload.cursorColor
-            : "#4ECDC4";
-
-        const safeCaretPos = Math.min(
-          Math.max(1, payloadCaretPos),
-          Math.max(1, editor.state.doc.content.size),
-        );
-
-        try {
-          const caretCoords = editor.view.coordsAtPos(safeCaretPos);
-          const containerRect = editorRef.current.getBoundingClientRect();
-
-          upsertRemoteCursor({
-            userId: cursorUserId,
-            username: cursorUsername,
-            color: cursorColor,
-            position: {
-              top: caretCoords.top - containerRect.top,
-              left: caretCoords.left - containerRect.left,
-            },
-            timestamp: Date.now(),
-          });
-        } catch {
-          // Ignore transient coordinate errors when cursor lands in replaced range.
-        }
-      })
-      .on("broadcast", { event: "ops_update" }, ({ payload }) => {
-        if (!editor) return;
-
-        const senderId =
-          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
-        const incomingTimestamp =
-          typeof payload?.sentAt === "number" ? payload.sentAt : 0;
-        const incomingMessageId =
-          typeof payload?.messageId === "string" ? payload.messageId : null;
-        const incomingOpSeq =
-          typeof payload?.opSeq === "number" ? payload.opSeq : 0;
-        const incomingSteps = Array.isArray(payload?.steps) ? payload.steps : [];
-
-        if (senderId === clientIdRef.current) return;
-        if (!incomingSteps.length) return;
-
-        if (incomingMessageId) {
-          if (processedMessageIdsRef.current.has(incomingMessageId)) return;
-          processedMessageIdsRef.current.add(incomingMessageId);
-
-          if (processedMessageIdsRef.current.size > 400) {
-            const ids = Array.from(processedMessageIdsRef.current);
-            processedMessageIdsRef.current = new Set(ids.slice(-200));
-          }
-        }
-
-        const lastSeenOpSeq = senderOpSequenceRef.current[senderId] ?? -1;
-        const lastSeenTimestamp = senderTimestampRef.current[senderId] ?? -1;
-
-        if (incomingTimestamp < lastSeenTimestamp) return;
-        if (incomingOpSeq <= lastSeenOpSeq) return;
-
-        try {
-          isRemoteUpdateRef.current = true;
-
-          let tr = editor.state.tr;
-          for (const stepJson of incomingSteps) {
-            const parsedStep = Step.fromJSON(editor.state.schema, stepJson);
-            tr = tr.step(parsedStep);
-          }
-
-          tr.setMeta("addToHistory", false);
-
-          if (tr.docChanged) {
-            editor.view.dispatch(tr);
-            setLocalContent(editor.getHTML());
-          }
-
-          const payloadCaretPos =
-            typeof payload?.caretPos === "number" ? payload.caretPos : null;
-          const cursorUserId =
-            typeof payload?.cursorUserId === "string"
-              ? payload.cursorUserId
-              : senderId;
-          const cursorUsername =
-            typeof payload?.cursorUsername === "string"
-              ? payload.cursorUsername
-              : "Collaborator";
-          const cursorColor =
-            typeof payload?.cursorColor === "string"
-              ? payload.cursorColor
-              : "#4ECDC4";
-
-          if (payloadCaretPos && editorRef.current) {
-            const safeCaretPos = Math.min(
-              Math.max(1, payloadCaretPos),
-              Math.max(1, editor.state.doc.content.size),
-            );
-
-            const caretCoords = editor.view.coordsAtPos(safeCaretPos);
-            const containerRect = editorRef.current.getBoundingClientRect();
-
-            upsertRemoteCursor({
-              userId: cursorUserId,
-              username: cursorUsername,
-              color: cursorColor,
-              position: {
-                top: caretCoords.top - containerRect.top,
-                left: caretCoords.left - containerRect.left,
-              },
-              timestamp: Date.now(),
-            });
-          }
-
-          senderOpSequenceRef.current[senderId] = incomingOpSeq;
-          senderTimestampRef.current[senderId] = incomingTimestamp;
-          pendingContentRef.current = null;
-        } catch {
-          // If operation application fails due to schema drift,
-          // the existing snapshot update handler will reconcile state.
-        } finally {
-          isRemoteUpdateRef.current = false;
-        }
-      })
-      .on("broadcast", { event: "content_update" }, ({ payload }) => {
-        if (!editor) return;
-        if (typeof payload?.content !== "string") return;
-
-        const senderId =
-          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
-        const incomingVersion =
-          typeof payload?.version === "number" ? payload.version : 0;
-        const incomingTimestamp =
-          typeof payload?.sentAt === "number" ? payload.sentAt : 0;
-        const incomingMessageId =
-          typeof payload?.messageId === "string" ? payload.messageId : null;
-
-        if (senderId === clientIdRef.current) return;
-
-        if (incomingMessageId) {
-          if (processedMessageIdsRef.current.has(incomingMessageId)) return;
-          processedMessageIdsRef.current.add(incomingMessageId);
-
-          if (processedMessageIdsRef.current.size > 400) {
-            const ids = Array.from(processedMessageIdsRef.current);
-            processedMessageIdsRef.current = new Set(ids.slice(-200));
-          }
-        }
-
-        // Compare versions per sender to avoid dropping valid edits from
-        // collaborators whose local sequence differs from this client.
-        const lastSeenVersion = senderVersionRef.current[senderId] ?? -1;
-        const lastSeenTimestamp = senderTimestampRef.current[senderId] ?? -1;
-        if (incomingTimestamp < lastSeenTimestamp) return;
-        if (incomingVersion <= lastSeenVersion) return;
-
-        // Conflict resolution: only apply if remote version is newer
-        // and content actually differs
-        if (payload.content === editor.getHTML()) return;
-
-        // Buffer remote update very briefly while local typing is in-flight,
-        // then apply when idle to avoid disruptive cursor jumps.
-        const localTypingIsActive =
-          !isReadOnly && Date.now() - lastLocalEditAtRef.current < 220;
-        if (localTypingIsActive) {
-          pendingContentRef.current = payload.content;
-          senderVersionRef.current[senderId] = incomingVersion;
-          senderTimestampRef.current[senderId] = incomingTimestamp;
-          return;
-        }
-
-        isRemoteUpdateRef.current = true;
-
-        // Store selection to restore after update
-        const { from, to } = editor.state.selection;
-        const docLength = editor.state.doc.content.size;
-
-        editor.commands.setContent(payload.content, false);
-
-        // Restore cursor proportionally if doc size changed
-        const newDocLength = editor.state.doc.content.size;
-        try {
-          const adjustedFrom = Math.min(from, newDocLength - 1);
-          const adjustedTo = Math.min(to, newDocLength - 1);
-          editor.commands.setTextSelection({
-            from: Math.max(1, adjustedFrom),
-            to: Math.max(1, adjustedTo),
-          });
-        } catch {
-          // Position no longer valid
-        }
-
-        // Move remote collaborator cursor to the actual caret endpoint
-        // for this content update, so it follows typed words in real-time.
-        const payloadCaretPos =
-          typeof payload?.caretPos === "number" ? payload.caretPos : null;
-        const cursorUserId =
-          typeof payload?.cursorUserId === "string"
-            ? payload.cursorUserId
-            : senderId;
-        const cursorUsername =
-          typeof payload?.cursorUsername === "string"
-            ? payload.cursorUsername
-            : "Collaborator";
-        const cursorColor =
-          typeof payload?.cursorColor === "string"
-            ? payload.cursorColor
-            : "#4ECDC4";
-
-        if (payloadCaretPos && editorRef.current) {
-          const safeCaretPos = Math.min(
-            Math.max(1, payloadCaretPos),
-            Math.max(1, newDocLength),
-          );
-
-          try {
-            const caretCoords = editor.view.coordsAtPos(safeCaretPos);
-            const containerRect = editorRef.current.getBoundingClientRect();
-
-            upsertRemoteCursor({
-              userId: cursorUserId,
-              username: cursorUsername,
-              color: cursorColor,
-              position: {
-                top: caretCoords.top - containerRect.top,
-                left: caretCoords.left - containerRect.left,
-              },
-              timestamp: Date.now(),
-            });
-          } catch {
-            // Ignore transient coordinate calculation failures.
-          }
-        }
-
-        senderVersionRef.current[senderId] = incomingVersion;
-        senderTimestampRef.current[senderId] = incomingTimestamp;
-        pendingContentRef.current = null;
-
-        isRemoteUpdateRef.current = false;
-      })
-      .subscribe();
-
-    channelRef.current = channel;
-
     return () => {
-      debouncedBroadcast.cancel();
-      debouncedBroadcastCursorUpdate.cancel();
-      debouncedSave.cancel();
-      channel.unsubscribe();
-      channelRef.current = null;
+      debouncedPersist.cancel();
     };
-  }, [
-    documentId,
-    editor,
-    debouncedBroadcast,
-    debouncedBroadcastCursorUpdate,
-    debouncedSave,
-    upsertRemoteCursor,
-    localCursorIdentity,
-    userColor,
-    getCurrentCaretPos,
-  ]);
+  }, [debouncedPersist]);
 
-  // Sync from parent content prop (initial load / external save)
+  // If the Yjs document is empty (new doc or first migration), seed it
+  // with the HTML content from the DB
   useEffect(() => {
-    if (!editor) return;
-    const currentEditorContent = editor.getHTML();
+    if (!editor || hasSetInitialContent.current) return;
 
-    if (content === currentEditorContent) {
-      setLocalContent(content);
-      return;
+    // Check if the Yjs document is empty
+    const yXmlFragment = ydoc.getXmlFragment("default");
+    const isEmpty = yXmlFragment.length === 0;
+
+    if (isEmpty && content && content !== "<p></p>") {
+      // Seed the Yjs document with existing HTML content
+      editor.commands.setContent(content, false);
+      hasSetInitialContent.current = true;
+    } else {
+      hasSetInitialContent.current = true;
     }
-
-    // Cancel any queued local writes based on stale editor state
-    // (e.g., initial empty content) before hydrating from parent.
-    debouncedSave.cancel();
-    debouncedBroadcast.cancel();
-
-    const shouldBufferBecauseLocalTyping =
-      !isReadOnly && Date.now() - lastLocalEditAtRef.current < 900;
-
-    if (shouldBufferBecauseLocalTyping) {
-      pendingContentRef.current = content;
-      return;
-    }
-
-    setLocalContent(content);
-    isRemoteUpdateRef.current = true;
-    editor.commands.setContent(content, false);
-    isRemoteUpdateRef.current = false;
-  }, [content, editor, debouncedSave, debouncedBroadcast]);
-
-  // Flush buffered remote content once local typing has paused.
-  useEffect(() => {
-    if (!editor) return;
-
-    const flushPending = () => {
-      const pending = pendingContentRef.current;
-      if (!pending) return;
-
-      if (!isReadOnly && Date.now() - lastLocalEditAtRef.current < 900) return;
-
-      if (pending === editor.getHTML()) {
-        pendingContentRef.current = null;
-        return;
-      }
-
-      isRemoteUpdateRef.current = true;
-      editor.commands.setContent(pending, false);
-      setLocalContent(pending);
-      isRemoteUpdateRef.current = false;
-      pendingContentRef.current = null;
-    };
-
-    const interval = setInterval(flushPending, 240);
-    return () => clearInterval(interval);
-  }, [editor, isReadOnly]);
+  }, [editor, content, ydoc]);
 
   useEffect(() => {
     if (!editor) return;
@@ -632,29 +224,20 @@ const DocumentEditor = ({
     }
   }, [editor]);
 
-  useEffect(() => {
-    return () => {
-      debouncedBroadcastCursorUpdate.cancel();
-    };
-  }, [debouncedBroadcastCursorUpdate]);
-
   // Keyboard shortcuts
   useEffect(() => {
     if (isReadOnly) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      // Cmd/Ctrl + Shift + F for focus mode
       if (mod && e.shiftKey && e.key === "f") {
         e.preventDefault();
         setIsFocusMode((prev) => !prev);
       }
-      // Cmd/Ctrl + Shift + H for find & replace
       if (mod && e.shiftKey && e.key === "h") {
         e.preventDefault();
         setShowFindReplace((prev) => !prev);
       }
-      // Escape to exit zen mode
       if (e.key === "Escape" && isZenMode) {
         setIsZenMode(false);
       }
@@ -735,9 +318,9 @@ const DocumentEditor = ({
         >
           <EditorContent
             editor={editor}
-            className="px-2 sm:px-4 py-4 sm:py-8 min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-300px)] overflow-y-auto"
+            className="px-4 sm:px-8 md:px-16 py-4 sm:py-8 min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-300px)] overflow-y-auto"
           />
-          <RemoteCursors cursors={cursors} />
+          {/* Remote cursors are now rendered inline by CollaborationCursor — no RemoteCursors component needed */}
         </div>
         <EditorStatusBar
           editor={editor}
@@ -773,10 +356,10 @@ const DocumentEditor = ({
             <VersionHistory
               documentId={documentId}
               currentContent={editor.getHTML()}
-              onRestore={(content) => {
-                editor.commands.setContent(content, true);
-                setLocalContent(content);
-                onUpdate(content);
+              onRestore={(restoredContent) => {
+                editor.commands.setContent(restoredContent, true);
+                setLocalContent(restoredContent);
+                onUpdate(restoredContent);
               }}
               onClose={() => setShowVersionHistory(false)}
             />
