@@ -72,18 +72,24 @@ const DocumentEditor = ({
   const editorRef = useRef<HTMLDivElement>(null);
   const isRemoteUpdateRef = useRef(false);
   const pendingContentRef = useRef<string | null>(null);
+  const lastLocalEditAtRef = useRef(0);
+  const processedMessageIdsRef = useRef<Set<string>>(new Set());
   const versionRef = useRef(0);
   const senderVersionRef = useRef<Record<string, number>>({});
+  const senderTimestampRef = useRef<Record<string, number>>({});
   const clientIdRef = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
 
-  const { cursors, broadcastCursorPosition, upsertRemoteCursor, localCursorIdentity, userColor } = useCursors(
-    documentId,
-    editorRef,
-  );
+  const {
+    cursors,
+    broadcastCursorPosition,
+    upsertRemoteCursor,
+    localCursorIdentity,
+    userColor,
+  } = useCursors(documentId, editorRef);
 
   const broadcastCaretFromEditor = useCallback(
     (instance: TiptapEditor) => {
@@ -120,6 +126,16 @@ const DocumentEditor = ({
     const selectionPos = instance.state.selection.to;
     const maxPos = Math.max(1, instance.state.doc.content.size);
     return Math.min(Math.max(1, selectionPos), maxPos);
+  }, []);
+
+  const createRealtimeEventId = useCallback(() => {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+
+    return `${clientIdRef.current}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
   }, []);
 
   const editor = useEditor({
@@ -173,6 +189,7 @@ const DocumentEditor = ({
     onUpdate: ({ editor }) => {
       if (isRemoteUpdateRef.current) return;
       const newContent = editor.getHTML();
+      lastLocalEditAtRef.current = Date.now();
       setLocalContent(newContent);
       versionRef.current += 1;
       const caretPos = getCurrentCaretPos(editor);
@@ -195,6 +212,8 @@ const DocumentEditor = ({
             type: "broadcast",
             event: "content_update",
             payload: {
+              messageId: createRealtimeEventId(),
+              sentAt: Date.now(),
               content: newContent,
               version,
               senderId: clientIdRef.current,
@@ -206,7 +225,7 @@ const DocumentEditor = ({
           });
         }
       }, 80),
-    [localCursorIdentity, userColor],
+    [createRealtimeEventId, localCursorIdentity, userColor],
   );
 
   // Debounced save to parent (slower - 500ms for perf)
@@ -231,22 +250,50 @@ const DocumentEditor = ({
     channel
       .on("broadcast", { event: "content_update" }, ({ payload }) => {
         if (!editor) return;
+        if (typeof payload?.content !== "string") return;
 
         const senderId =
           typeof payload?.senderId === "string" ? payload.senderId : "unknown";
         const incomingVersion =
           typeof payload?.version === "number" ? payload.version : 0;
+        const incomingTimestamp =
+          typeof payload?.sentAt === "number" ? payload.sentAt : 0;
+        const incomingMessageId =
+          typeof payload?.messageId === "string" ? payload.messageId : null;
 
         if (senderId === clientIdRef.current) return;
+
+        if (incomingMessageId) {
+          if (processedMessageIdsRef.current.has(incomingMessageId)) return;
+          processedMessageIdsRef.current.add(incomingMessageId);
+
+          if (processedMessageIdsRef.current.size > 400) {
+            const ids = Array.from(processedMessageIdsRef.current);
+            processedMessageIdsRef.current = new Set(ids.slice(-200));
+          }
+        }
 
         // Compare versions per sender to avoid dropping valid edits from
         // collaborators whose local sequence differs from this client.
         const lastSeenVersion = senderVersionRef.current[senderId] ?? -1;
+        const lastSeenTimestamp = senderTimestampRef.current[senderId] ?? -1;
+        if (incomingTimestamp < lastSeenTimestamp) return;
         if (incomingVersion <= lastSeenVersion) return;
 
         // Conflict resolution: only apply if remote version is newer
         // and content actually differs
         if (payload.content === editor.getHTML()) return;
+
+        // Buffer remote update very briefly while local typing is in-flight,
+        // then apply when idle to avoid disruptive cursor jumps.
+        const localTypingIsActive =
+          !isReadOnly && Date.now() - lastLocalEditAtRef.current < 220;
+        if (localTypingIsActive) {
+          pendingContentRef.current = payload.content;
+          senderVersionRef.current[senderId] = incomingVersion;
+          senderTimestampRef.current[senderId] = incomingTimestamp;
+          return;
+        }
 
         isRemoteUpdateRef.current = true;
 
@@ -312,6 +359,8 @@ const DocumentEditor = ({
         }
 
         senderVersionRef.current[senderId] = incomingVersion;
+        senderTimestampRef.current[senderId] = incomingTimestamp;
+        pendingContentRef.current = null;
 
         isRemoteUpdateRef.current = false;
       })
@@ -338,14 +387,13 @@ const DocumentEditor = ({
     getCurrentCaretPos,
   ]);
 
-  // Sync from parent content prop (initial load / remote DB update fallback)
+  // Sync from parent content prop (initial load / external save)
   useEffect(() => {
     if (!editor) return;
     const currentEditorContent = editor.getHTML();
 
-    // Skip if content is identical (no-op)
     if (content === currentEditorContent) {
-      if (content !== localContent) setLocalContent(content);
+      setLocalContent(content);
       return;
     }
 
@@ -354,25 +402,45 @@ const DocumentEditor = ({
     debouncedSave.cancel();
     debouncedBroadcast.cancel();
 
-    setLocalContent(content);
-    isRemoteUpdateRef.current = true;
+    const shouldBufferBecauseLocalTyping =
+      !isReadOnly && Date.now() - lastLocalEditAtRef.current < 900;
 
-    // Preserve cursor position across remote update
-    const { from, to } = editor.state.selection;
-    editor.commands.setContent(content, false);
-
-    const newDocLength = editor.state.doc.content.size;
-    try {
-      editor.commands.setTextSelection({
-        from: Math.min(Math.max(1, from), newDocLength - 1),
-        to: Math.min(Math.max(1, to), newDocLength - 1),
-      });
-    } catch {
-      // Position no longer valid
+    if (shouldBufferBecauseLocalTyping) {
+      pendingContentRef.current = content;
+      return;
     }
 
+    setLocalContent(content);
+    isRemoteUpdateRef.current = true;
+    editor.commands.setContent(content, false);
     isRemoteUpdateRef.current = false;
   }, [content, editor, debouncedSave, debouncedBroadcast]);
+
+  // Flush buffered remote content once local typing has paused.
+  useEffect(() => {
+    if (!editor) return;
+
+    const flushPending = () => {
+      const pending = pendingContentRef.current;
+      if (!pending) return;
+
+      if (!isReadOnly && Date.now() - lastLocalEditAtRef.current < 900) return;
+
+      if (pending === editor.getHTML()) {
+        pendingContentRef.current = null;
+        return;
+      }
+
+      isRemoteUpdateRef.current = true;
+      editor.commands.setContent(pending, false);
+      setLocalContent(pending);
+      isRemoteUpdateRef.current = false;
+      pendingContentRef.current = null;
+    };
+
+    const interval = setInterval(flushPending, 240);
+    return () => clearInterval(interval);
+  }, [editor, isReadOnly]);
 
   useEffect(() => {
     if (!editor) return;
@@ -498,7 +566,7 @@ const DocumentEditor = ({
         >
           <EditorContent
             editor={editor}
-            className="px-4 sm:px-8 md:px-16 py-4 sm:py-8 min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-300px)] overflow-y-auto"
+            className="px-2 sm:px-4 py-4 sm:py-8 min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-300px)] overflow-y-auto"
           />
           <RemoteCursors cursors={cursors} />
         </div>

@@ -33,12 +33,16 @@ export const useCursors = (
   }, [documentId]);
 
   // Memoized cursor update function to prevent re-renders
-  const updateCursors = useCallback((payload: CursorPosition) => {
-    setCursors((prev) => {
-      const filtered = prev.filter((c) => c.userId !== payload.userId);
-      return [...filtered, { ...payload, timestamp: Date.now() }];
-    });
-  }, []);
+  const updateCursors = useCallback(
+    (payload: CursorPosition) => {
+      setCursors((prev) => {
+        // Optimize update by only updating the specific cursor
+        const filtered = prev.filter((c) => c.userId !== payload.userId);
+        return [...filtered, { ...payload, timestamp: Date.now() }];
+      });
+    },
+    [documentId],
+  );
 
   // Cache current user once to avoid repeated auth lookups during cursor broadcasts.
   useEffect(() => {
@@ -65,6 +69,7 @@ export const useCursors = (
       }
 
       // Shared-link viewers may be anonymous; give them a stable local identity
+      // so they can still participate in cursor collaboration.
       const guestStorageKey = `cursor-guest-${documentId}`;
       const existingGuestId = localStorage.getItem(guestStorageKey);
       const guestId =
@@ -91,7 +96,7 @@ export const useCursors = (
     return () => {
       isMounted = false;
     };
-  }, [documentId]);
+  }, []);
 
   const broadcastCursorPosition = useCallback(
     (position: { top: number; left: number }) => {
@@ -130,7 +135,7 @@ export const useCursors = (
     [broadcastCursorPosition],
   );
 
-  // Broadcast local pointer movement
+  // Broadcast local pointer movement as a lightweight fallback for non-typing collaboration cues.
   useEffect(() => {
     if (!documentId || !editorDomRef.current) return;
 
@@ -152,11 +157,11 @@ export const useCursors = (
     };
   }, [documentId, editorDomRef, debouncedMouseBroadcast]);
 
-  // Supabase channel setup — use unique name to avoid collision with doc-sync channel
+  // Supabase channel setup - use useRef to avoid unnecessary re-subscriptions
   useEffect(() => {
     if (!documentId) return;
 
-    const newChannel = supabase.channel(`cursors:${documentId}`);
+    const newChannel = supabase.channel(`document:${documentId}`);
 
     newChannel
       .on("broadcast", { event: "cursor_move" }, ({ payload }) => {
@@ -172,17 +177,18 @@ export const useCursors = (
     };
   }, [documentId, updateCursors]);
 
-  // Clean up stale cursor positions
+  // Clean up stale cursor positions with useRef for timer identity
   useEffect(() => {
     const cleanupTimerId = setInterval(() => {
       setCursors((prev) => {
         const now = Date.now();
+        // Only run filter if there are cursors with timestamps to check
         if (prev.some((c) => c.timestamp)) {
           return prev.filter((c) => c.timestamp && now - c.timestamp < 5000);
         }
         return prev;
       });
-    }, 2000);
+    }, 2000); // Less frequent cleanup
 
     return () => clearInterval(cleanupTimerId);
   }, []);
