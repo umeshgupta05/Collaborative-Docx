@@ -20,14 +20,17 @@ const RemoteCursor = memo(({ cursor }: { cursor: CursorPosition }) => {
       }}
     >
       <div
-        className="absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full px-2 py-1 rounded-md text-xs text-white shadow-md border border-white/30"
+        className="absolute px-2 py-1 rounded-md text-[11px] font-medium text-white shadow-md border border-white/30"
         style={{
+          left: "50%",
+          top: 0,
+          transform: "translate(-50%, calc(-100% - 10px))",
           backgroundColor: cursor.color,
           whiteSpace: "nowrap",
-          maxWidth: "180px",
+          maxWidth: "160px",
           overflow: "hidden",
           textOverflow: "ellipsis",
-          opacity: 0.95,
+          opacity: 0.96,
           lineHeight: 1,
         }}
       >

@@ -3,8 +3,15 @@ import { debounce } from "lodash";
 import { supabase } from "@/integrations/supabase/client";
 import { CursorPosition, CURSOR_COLORS } from "@/utils/cursor-utils";
 
+
+interface LocalCursorIdentity {
+  userId: string;
+  username: string;
+}
 export const useCursors = (
   documentId: string,
+  const [localCursorIdentity, setLocalCursorIdentity] =
+    useState<LocalCursorIdentity | null>(null);
   editorDomRef: React.RefObject<HTMLDivElement>,
 ) => {
   const [cursors, setCursors] = useState<CursorPosition[]>([]);
@@ -46,10 +53,15 @@ export const useCursors = (
       if (!isMounted) return;
 
       if (user) {
-        currentUserRef.current = {
+        const identity = {
           id: user.id,
           username: user.email?.split("@")[0] || "Anonymous",
         };
+        currentUserRef.current = identity;
+        setLocalCursorIdentity({
+          userId: identity.id,
+          username: identity.username,
+        });
         return;
       }
 
@@ -65,10 +77,15 @@ export const useCursors = (
         localStorage.setItem(guestStorageKey, guestId);
       }
 
-      currentUserRef.current = {
+      const identity = {
         id: guestId,
         username: `Guest-${guestId.slice(-4)}`,
       };
+      currentUserRef.current = identity;
+      setLocalCursorIdentity({
+        userId: identity.id,
+        username: identity.username,
+      });
     };
 
     loadCurrentUser();
@@ -99,6 +116,10 @@ export const useCursors = (
     },
     [userColor],
   );
+
+  const upsertRemoteCursor = useCallback((payload: CursorPosition) => {
+    updateCursors(payload);
+  }, [updateCursors]);
 
   const debouncedMouseBroadcast = useMemo(
     () =>
@@ -176,6 +197,8 @@ export const useCursors = (
     channel: channelRef.current,
     cursors,
     userColor,
+    localCursorIdentity,
     broadcastCursorPosition,
+    upsertRemoteCursor,
   };
 };

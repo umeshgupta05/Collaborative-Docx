@@ -80,7 +80,7 @@ const DocumentEditor = ({
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
 
-  const { cursors, broadcastCursorPosition } = useCursors(
+  const { cursors, broadcastCursorPosition, upsertRemoteCursor, localCursorIdentity, userColor } = useCursors(
     documentId,
     editorRef,
   );
@@ -115,6 +115,12 @@ const DocumentEditor = ({
       }, 28),
     [broadcastCaretFromEditor],
   );
+
+  const getCurrentCaretPos = useCallback((instance: TiptapEditor) => {
+    const selectionPos = instance.state.selection.to;
+    const maxPos = Math.max(1, instance.state.doc.content.size);
+    return Math.min(Math.max(1, selectionPos), maxPos);
+  }, []);
 
   const editor = useEditor({
     extensions: [
@@ -169,7 +175,8 @@ const DocumentEditor = ({
       const newContent = editor.getHTML();
       setLocalContent(newContent);
       versionRef.current += 1;
-      debouncedBroadcast(newContent, versionRef.current);
+      const caretPos = getCurrentCaretPos(editor);
+      debouncedBroadcast(newContent, versionRef.current, caretPos);
       debouncedBroadcastCaret(editor);
       debouncedSave(newContent);
     },
@@ -182,7 +189,7 @@ const DocumentEditor = ({
   // Debounced broadcast for real-time sync (fast - 80ms)
   const debouncedBroadcast = useMemo(
     () =>
-      debounce((newContent: string, version: number) => {
+      debounce((newContent: string, version: number, caretPos: number) => {
         if (channelRef.current) {
           channelRef.current.send({
             type: "broadcast",
@@ -191,11 +198,15 @@ const DocumentEditor = ({
               content: newContent,
               version,
               senderId: clientIdRef.current,
+              caretPos,
+              cursorUserId: localCursorIdentity?.userId,
+              cursorUsername: localCursorIdentity?.username,
+              cursorColor: userColor,
             },
           });
         }
       }, 80),
-    [],
+    [localCursorIdentity, userColor],
   );
 
   // Debounced save to parent (slower - 500ms for perf)
@@ -258,6 +269,48 @@ const DocumentEditor = ({
           // Position no longer valid
         }
 
+        // Move remote collaborator cursor to the actual caret endpoint
+        // for this content update, so it follows typed words in real-time.
+        const payloadCaretPos =
+          typeof payload?.caretPos === "number" ? payload.caretPos : null;
+        const cursorUserId =
+          typeof payload?.cursorUserId === "string"
+            ? payload.cursorUserId
+            : senderId;
+        const cursorUsername =
+          typeof payload?.cursorUsername === "string"
+            ? payload.cursorUsername
+            : "Collaborator";
+        const cursorColor =
+          typeof payload?.cursorColor === "string"
+            ? payload.cursorColor
+            : "#4ECDC4";
+
+        if (payloadCaretPos && editorRef.current) {
+          const safeCaretPos = Math.min(
+            Math.max(1, payloadCaretPos),
+            Math.max(1, newDocLength),
+          );
+
+          try {
+            const caretCoords = editor.view.coordsAtPos(safeCaretPos);
+            const containerRect = editorRef.current.getBoundingClientRect();
+
+            upsertRemoteCursor({
+              userId: cursorUserId,
+              username: cursorUsername,
+              color: cursorColor,
+              position: {
+                top: caretCoords.top - containerRect.top,
+                left: caretCoords.left - containerRect.left,
+              },
+              timestamp: Date.now(),
+            });
+          } catch {
+            // Ignore transient coordinate calculation failures.
+          }
+        }
+
         senderVersionRef.current[senderId] = incomingVersion;
 
         isRemoteUpdateRef.current = false;
@@ -279,6 +332,10 @@ const DocumentEditor = ({
     debouncedBroadcast,
     debouncedBroadcastCaret,
     debouncedSave,
+    upsertRemoteCursor,
+    localCursorIdentity,
+    userColor,
+    getCurrentCaretPos,
   ]);
 
   // Sync from parent content prop (initial load / external save)
