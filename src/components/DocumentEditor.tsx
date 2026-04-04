@@ -338,13 +338,14 @@ const DocumentEditor = ({
     getCurrentCaretPos,
   ]);
 
-  // Sync from parent content prop (initial load / external save)
+  // Sync from parent content prop (initial load / remote DB update fallback)
   useEffect(() => {
     if (!editor) return;
     const currentEditorContent = editor.getHTML();
 
+    // Skip if content is identical (no-op)
     if (content === currentEditorContent) {
-      setLocalContent(content);
+      if (content !== localContent) setLocalContent(content);
       return;
     }
 
@@ -355,7 +356,21 @@ const DocumentEditor = ({
 
     setLocalContent(content);
     isRemoteUpdateRef.current = true;
+
+    // Preserve cursor position across remote update
+    const { from, to } = editor.state.selection;
     editor.commands.setContent(content, false);
+
+    const newDocLength = editor.state.doc.content.size;
+    try {
+      editor.commands.setTextSelection({
+        from: Math.min(Math.max(1, from), newDocLength - 1),
+        to: Math.min(Math.max(1, to), newDocLength - 1),
+      });
+    } catch {
+      // Position no longer valid
+    }
+
     isRemoteUpdateRef.current = false;
   }, [content, editor, debouncedSave, debouncedBroadcast]);
 

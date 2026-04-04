@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,29 @@ const Comments = ({ documentId }: { documentId: string }) => {
       return data as Comment[];
     },
   });
+
+  // ── Live sync: auto-refresh when any comment is added/updated ──
+  useEffect(() => {
+    const channel = supabase
+      .channel(`comments-live:${documentId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "comments",
+          filter: `document_id=eq.${documentId}`,
+        },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["comments", documentId] });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [documentId, queryClient]);
 
   const addComment = useMutation({
     mutationFn: async ({

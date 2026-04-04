@@ -3,19 +3,19 @@ import { debounce } from "lodash";
 import { supabase } from "@/integrations/supabase/client";
 import { CursorPosition, CURSOR_COLORS } from "@/utils/cursor-utils";
 
-
 interface LocalCursorIdentity {
   userId: string;
   username: string;
 }
+
 export const useCursors = (
   documentId: string,
-  const [localCursorIdentity, setLocalCursorIdentity] =
-    useState<LocalCursorIdentity | null>(null);
   editorDomRef: React.RefObject<HTMLDivElement>,
 ) => {
   const [cursors, setCursors] = useState<CursorPosition[]>([]);
   const [userColor, setUserColor] = useState("");
+  const [localCursorIdentity, setLocalCursorIdentity] =
+    useState<LocalCursorIdentity | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const currentUserRef = useRef<{ id: string; username: string } | null>(null);
 
@@ -35,7 +35,6 @@ export const useCursors = (
   // Memoized cursor update function to prevent re-renders
   const updateCursors = useCallback((payload: CursorPosition) => {
     setCursors((prev) => {
-      // Optimize update by only updating the specific cursor
       const filtered = prev.filter((c) => c.userId !== payload.userId);
       return [...filtered, { ...payload, timestamp: Date.now() }];
     });
@@ -66,7 +65,6 @@ export const useCursors = (
       }
 
       // Shared-link viewers may be anonymous; give them a stable local identity
-      // so they can still participate in cursor collaboration.
       const guestStorageKey = `cursor-guest-${documentId}`;
       const existingGuestId = localStorage.getItem(guestStorageKey);
       const guestId =
@@ -93,7 +91,7 @@ export const useCursors = (
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [documentId]);
 
   const broadcastCursorPosition = useCallback(
     (position: { top: number; left: number }) => {
@@ -117,9 +115,12 @@ export const useCursors = (
     [userColor],
   );
 
-  const upsertRemoteCursor = useCallback((payload: CursorPosition) => {
-    updateCursors(payload);
-  }, [updateCursors]);
+  const upsertRemoteCursor = useCallback(
+    (payload: CursorPosition) => {
+      updateCursors(payload);
+    },
+    [updateCursors],
+  );
 
   const debouncedMouseBroadcast = useMemo(
     () =>
@@ -129,7 +130,7 @@ export const useCursors = (
     [broadcastCursorPosition],
   );
 
-  // Broadcast local pointer movement as a lightweight fallback for non-typing collaboration cues.
+  // Broadcast local pointer movement
   useEffect(() => {
     if (!documentId || !editorDomRef.current) return;
 
@@ -151,11 +152,11 @@ export const useCursors = (
     };
   }, [documentId, editorDomRef, debouncedMouseBroadcast]);
 
-  // Supabase channel setup - use useRef to avoid unnecessary re-subscriptions
+  // Supabase channel setup — use unique name to avoid collision with doc-sync channel
   useEffect(() => {
     if (!documentId) return;
 
-    const newChannel = supabase.channel(`document:${documentId}`);
+    const newChannel = supabase.channel(`cursors:${documentId}`);
 
     newChannel
       .on("broadcast", { event: "cursor_move" }, ({ payload }) => {
@@ -171,18 +172,17 @@ export const useCursors = (
     };
   }, [documentId, updateCursors]);
 
-  // Clean up stale cursor positions with useRef for timer identity
+  // Clean up stale cursor positions
   useEffect(() => {
     const cleanupTimerId = setInterval(() => {
       setCursors((prev) => {
         const now = Date.now();
-        // Only run filter if there are cursors with timestamps to check
         if (prev.some((c) => c.timestamp)) {
           return prev.filter((c) => c.timestamp && now - c.timestamp < 5000);
         }
         return prev;
       });
-    }, 2000); // Less frequent cleanup
+    }, 2000);
 
     return () => clearInterval(cleanupTimerId);
   }, []);

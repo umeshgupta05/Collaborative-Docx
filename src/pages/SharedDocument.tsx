@@ -90,6 +90,10 @@ const SharedDocument = () => {
   const [passwordError, setPasswordError] = useState("");
   const hasHydratedFromServerRef = useRef(false);
 
+  // ── Sync guards ──
+  const isApplyingRemoteRef = useRef(false);
+  const lastLocalSaveAtRef = useRef<string | null>(null);
+
   // Check if user is authenticated
   useEffect(() => {
     const checkAuth = async () => {
@@ -126,9 +130,10 @@ const SharedDocument = () => {
     enabled: !!token,
   });
 
-  // Update state when share data is fetched
+  // Update state when share data is fetched (one-time hydration)
   useEffect(() => {
-    if (shareData && isPasswordVerified) {
+    if (shareData && isPasswordVerified && !hasHydratedFromServerRef.current) {
+      isApplyingRemoteRef.current = true;
       setDocumentId(shareData.document_id);
       setPermissionLevel(shareData.permission_level);
       setTitle(shareData.document.title);
@@ -137,26 +142,51 @@ const SharedDocument = () => {
         shareData.document.document_border_style || "none",
       );
       hasHydratedFromServerRef.current = true;
+      requestAnimationFrame(() => {
+        isApplyingRemoteRef.current = false;
+      });
     }
   }, [shareData, isPasswordVerified]);
 
-  // Set up real-time document subscription
+  // Set up real-time document subscription — apply remote changes directly
   useEffect(() => {
     if (!documentId || !isPasswordVerified) return;
 
     const channel = supabase
-      .channel(`document:${documentId}`)
+      .channel(`pg-shared:${documentId}`)
       .on(
         "postgres_changes",
         {
-          event: "*",
+          event: "UPDATE",
           schema: "public",
           table: "documents",
           filter: `id=eq.${documentId}`,
         },
-        () => {
-          queryClient.invalidateQueries({
-            queryKey: ["document-share", token],
+        (payload) => {
+          const newRecord = payload.new as {
+            title: string;
+            content: string | null;
+            document_border_style: string | null;
+            updated_at: string;
+          };
+
+          // Skip self-originated updates
+          if (
+            lastLocalSaveAtRef.current &&
+            newRecord.updated_at === lastLocalSaveAtRef.current
+          ) {
+            return;
+          }
+
+          isApplyingRemoteRef.current = true;
+          setTitle(newRecord.title);
+          setContent(newRecord.content || "");
+          setDocumentBorderStyle(
+            (newRecord.document_border_style as DocumentBorderStyle | null) ||
+              "none",
+          );
+          requestAnimationFrame(() => {
+            isApplyingRemoteRef.current = false;
           });
         },
       )
@@ -165,7 +195,7 @@ const SharedDocument = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [documentId, queryClient, token, isPasswordVerified]);
+  }, [documentId, isPasswordVerified]);
 
   // Set up presence channel for collaborative features
   useEffect(() => {
@@ -235,28 +265,28 @@ const SharedDocument = () => {
     }) => {
       if (!documentId) throw new Error("Document ID is missing");
 
+      const updatedAt = new Date().toISOString();
+      lastLocalSaveAtRef.current = updatedAt;
+
       const { error } = await supabase
         .from("documents")
         .update({
           title,
           content,
           document_border_style: documentBorderStyle,
-          updated_at: new Date().toISOString(),
+          updated_at: updatedAt,
         })
         .eq("id", documentId);
 
       if (error) throw error;
     },
     onSuccess: () => {
-      if (documentId) {
-        queryClient.invalidateQueries({ queryKey: ["document-share", token] });
-      }
       toast({
         title: "Success",
         description: "Document saved successfully",
       });
     },
-    onError: (error) => {
+    onError: () => {
       toast({
         variant: "destructive",
         title: "Error",
@@ -295,13 +325,16 @@ const SharedDocument = () => {
           nextContent: string,
           nextBorder: DocumentBorderStyle,
         ) => {
+          const updatedAt = new Date().toISOString();
+          lastLocalSaveAtRef.current = updatedAt;
+
           const { error } = await supabase
             .from("documents")
             .update({
               title: nextTitle,
               content: nextContent,
               document_border_style: nextBorder,
-              updated_at: new Date().toISOString(),
+              updated_at: updatedAt,
             })
             .eq("id", documentId);
 
@@ -320,9 +353,11 @@ const SharedDocument = () => {
     };
   }, [debouncedAutoSave]);
 
+  // Only auto-save when changes are local (not from remote updates)
   useEffect(() => {
     if (!documentId || permissionLevel !== "edit") return;
     if (!isPasswordVerified || !hasHydratedFromServerRef.current) return;
+    if (isApplyingRemoteRef.current) return;
 
     debouncedAutoSave(title, content, documentBorderStyle);
   }, [
@@ -348,6 +383,7 @@ const SharedDocument = () => {
       );
 
       if (isValid) {
+        isApplyingRemoteRef.current = true;
         setIsPasswordVerified(true);
         setDocumentId(shareData.document_id);
         setPermissionLevel(shareData.permission_level);
@@ -357,6 +393,9 @@ const SharedDocument = () => {
           shareData.document.document_border_style || "none",
         );
         hasHydratedFromServerRef.current = true;
+        requestAnimationFrame(() => {
+          isApplyingRemoteRef.current = false;
+        });
       } else {
         setPasswordError("Incorrect password");
       }

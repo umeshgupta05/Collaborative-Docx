@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
@@ -47,7 +47,17 @@ const Document = () => {
   const [saved, setSaved] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [showMobileComments, setShowMobileComments] = useState(false);
-  const hasHydratedFromServerRef = useRef(false);
+
+  // ── Sync guards ──
+  // Tracks whether the initial hydration from server has happened.
+  // Prevents auto-save from firing on the very first render with empty state.
+  const hasHydratedRef = useRef(false);
+  // Tracks whether we are currently applying a remote/server update to local state.
+  // When true, the auto-save effect must NOT write back to the DB.
+  const isApplyingRemoteRef = useRef(false);
+  // Timestamp of our last local save. Used to ignore postgres_changes events
+  // that were triggered by our own writes.
+  const lastLocalSaveAtRef = useRef<string | null>(null);
 
   // Wait for auth session to restore before doing anything
   useEffect(() => {
@@ -77,49 +87,86 @@ const Document = () => {
     },
     enabled: !!id && sessionReady,
     retry: 1,
+    // Don't refetch aggressively — we rely on real-time channels for live sync
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
   });
 
   const dashboardPath = document?.folder_id
     ? `/dashboard?folder=${document.folder_id}`
     : "/dashboard";
 
+  // ── Initial hydration from server (runs ONCE when document first loads) ──
   useEffect(() => {
-    if (document) {
-      const typedDocument = document as DocumentRow;
-      setTitle(typedDocument.title);
-      setContent(typedDocument.content || "");
-      setDocumentBorderStyle(
-        (typedDocument.document_border_style as DocumentBorderStyle | null) ||
-          "none",
-      );
-      setTags(typedDocument.tags || []);
-      hasHydratedFromServerRef.current = true;
-    }
+    if (!document || hasHydratedRef.current) return;
+
+    const typedDocument = document as DocumentRow;
+    isApplyingRemoteRef.current = true;
+    setTitle(typedDocument.title);
+    setContent(typedDocument.content || "");
+    setDocumentBorderStyle(
+      (typedDocument.document_border_style as DocumentBorderStyle | null) ||
+        "none",
+    );
+    setTags(typedDocument.tags || []);
+    hasHydratedRef.current = true;
+
+    // Use requestAnimationFrame to ensure state has settled before
+    // allowing auto-save to run.
+    requestAnimationFrame(() => {
+      isApplyingRemoteRef.current = false;
+    });
   }, [document]);
 
-  // Real-time document subscription
+  // ── Real-time document subscription (fallback for cold-start / tab refocus) ──
+  // Only applies remote changes if they did NOT originate from this client.
   useEffect(() => {
+    if (!id) return;
+
     const channel = supabase
-      .channel(`document:${id}`)
+      .channel(`pg-doc:${id}`)
       .on(
         "postgres_changes",
         {
-          event: "*",
+          event: "UPDATE",
           schema: "public",
           table: "documents",
           filter: `id=eq.${id}`,
         },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["document", id] });
+        (payload) => {
+          const newRecord = payload.new as DocumentRow;
+
+          // Skip if this update was from our own save
+          if (
+            lastLocalSaveAtRef.current &&
+            newRecord.updated_at === lastLocalSaveAtRef.current
+          ) {
+            return;
+          }
+
+          // Apply the remote update to local state
+          isApplyingRemoteRef.current = true;
+          setTitle(newRecord.title);
+          setContent(newRecord.content || "");
+          setDocumentBorderStyle(
+            (newRecord.document_border_style as DocumentBorderStyle | null) ||
+              "none",
+          );
+          setTags(newRecord.tags || []);
+
+          requestAnimationFrame(() => {
+            isApplyingRemoteRef.current = false;
+          });
         },
       )
       .subscribe();
+
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [id, queryClient]);
+  }, [id]);
 
-  // Presence channel
+  // ── Presence channel ──
   useEffect(() => {
     let presenceChannel: ReturnType<typeof supabase.channel>;
     const setupPresence = async () => {
@@ -181,6 +228,7 @@ const Document = () => {
     };
   }, [id]);
 
+  // ── Manual save ──
   const updateDocument = useMutation({
     mutationFn: async ({
       title,
@@ -193,6 +241,9 @@ const Document = () => {
       documentBorderStyle: DocumentBorderStyle;
       tags: string[];
     }) => {
+      const updatedAt = new Date().toISOString();
+      lastLocalSaveAtRef.current = updatedAt;
+
       const { error } = await supabase
         .from("documents")
         .update({
@@ -200,13 +251,12 @@ const Document = () => {
           content,
           tags,
           document_border_style: documentBorderStyle,
-          updated_at: new Date().toISOString(),
+          updated_at: updatedAt,
         })
         .eq("id", id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["document", id] });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },
@@ -224,6 +274,7 @@ const Document = () => {
     if (id) snapshotVersion(id, content);
   };
 
+  // ── Auto-save (debounced) ──
   const debouncedAutoSave = useMemo(
     () =>
       debounce(
@@ -233,6 +284,9 @@ const Document = () => {
           nextTags: string[],
           nextBorder: DocumentBorderStyle,
         ) => {
+          const updatedAt = new Date().toISOString();
+          lastLocalSaveAtRef.current = updatedAt;
+
           const { error } = await supabase
             .from("documents")
             .update({
@@ -240,7 +294,7 @@ const Document = () => {
               content: nextContent,
               tags: nextTags,
               document_border_style: nextBorder,
-              updated_at: new Date().toISOString(),
+              updated_at: updatedAt,
             })
             .eq("id", id);
 
@@ -259,8 +313,10 @@ const Document = () => {
     };
   }, [debouncedAutoSave]);
 
+  // Only auto-save when changes are local (not from remote updates)
   useEffect(() => {
-    if (!id || !hasHydratedFromServerRef.current) return;
+    if (!id || !hasHydratedRef.current) return;
+    if (isApplyingRemoteRef.current) return;
 
     debouncedAutoSave(title, content, tags, documentBorderStyle);
   }, [id, title, content, documentBorderStyle, tags, debouncedAutoSave]);
