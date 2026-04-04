@@ -73,6 +73,7 @@ const DocumentEditor = ({
   const isRemoteUpdateRef = useRef(false);
   const pendingContentRef = useRef<string | null>(null);
   const versionRef = useRef(0);
+  const senderVersionRef = useRef<Record<string, number>>({});
   const clientIdRef = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -220,13 +221,17 @@ const DocumentEditor = ({
       .on("broadcast", { event: "content_update" }, ({ payload }) => {
         if (!editor) return;
 
+        const senderId =
+          typeof payload?.senderId === "string" ? payload.senderId : "unknown";
         const incomingVersion =
           typeof payload?.version === "number" ? payload.version : 0;
 
-        if (payload?.senderId === clientIdRef.current) return;
+        if (senderId === clientIdRef.current) return;
 
-        // Ignore out-of-order or duplicate payloads.
-        if (incomingVersion <= versionRef.current) return;
+        // Compare versions per sender to avoid dropping valid edits from
+        // collaborators whose local sequence differs from this client.
+        const lastSeenVersion = senderVersionRef.current[senderId] ?? -1;
+        if (incomingVersion <= lastSeenVersion) return;
 
         // Conflict resolution: only apply if remote version is newer
         // and content actually differs
@@ -253,7 +258,7 @@ const DocumentEditor = ({
           // Position no longer valid
         }
 
-        versionRef.current = incomingVersion;
+        senderVersionRef.current[senderId] = incomingVersion;
 
         isRemoteUpdateRef.current = false;
       })

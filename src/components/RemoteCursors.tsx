@@ -1,6 +1,6 @@
 
-import React, { memo } from 'react';
-import { CursorPosition } from '@/utils/cursor-utils';
+import React, { memo } from "react";
+import { CursorPosition } from "@/utils/cursor-utils";
 
 interface RemoteCursorsProps {
   cursors: CursorPosition[];
@@ -14,28 +14,29 @@ const RemoteCursor = memo(({ cursor }: { cursor: CursorPosition }) => {
       style={{
         top: cursor.position.top,
         left: cursor.position.left,
-        transform: 'translate(-50%, -50%)',
+        transform: "translate(-50%, -50%)",
         zIndex: 50,
-        transition: 'top 0.08s ease, left 0.08s ease', // Faster cursor transitions
+        transition: "top 0.08s ease, left 0.08s ease", // Faster cursor transitions
       }}
     >
       <div
-        className="w-3 h-3 rounded-full"
-        style={{ backgroundColor: cursor.color }}
-      />
-      <div
-        className="px-2 py-1 rounded text-xs text-white mt-1"
-        style={{ 
+        className="absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full px-2 py-1 rounded-md text-xs text-white shadow-md border border-white/30"
+        style={{
           backgroundColor: cursor.color,
-          whiteSpace: 'nowrap',
-          maxWidth: '150px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          opacity: 0.8,
+          whiteSpace: "nowrap",
+          maxWidth: "180px",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          opacity: 0.95,
+          lineHeight: 1,
         }}
       >
         {cursor.username}
       </div>
+      <div
+        className="w-3 h-3 rounded-full ring-2 ring-background"
+        style={{ backgroundColor: cursor.color }}
+      />
     </div>
   );
 });
@@ -44,8 +45,8 @@ RemoteCursor.displayName = 'RemoteCursor';
 
 const RemoteCursors: React.FC<RemoteCursorsProps> = ({ cursors }) => {
   // Don't render more than a reasonable number of cursors to maintain performance
-  const visibleCursors = cursors.slice(0, 10); 
-  
+  const visibleCursors = cursors.slice(0, 10);
+
   return (
     <>
       {visibleCursors.map((cursor) => (

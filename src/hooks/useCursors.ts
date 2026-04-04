@@ -43,11 +43,31 @@ export const useCursors = (
         data: { user },
       } = await supabase.auth.getUser();
 
-      if (!isMounted || !user) return;
+      if (!isMounted) return;
+
+      if (user) {
+        currentUserRef.current = {
+          id: user.id,
+          username: user.email?.split("@")[0] || "Anonymous",
+        };
+        return;
+      }
+
+      // Shared-link viewers may be anonymous; give them a stable local identity
+      // so they can still participate in cursor collaboration.
+      const guestStorageKey = `cursor-guest-${documentId}`;
+      const existingGuestId = localStorage.getItem(guestStorageKey);
+      const guestId =
+        existingGuestId ||
+        `guest-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+
+      if (!existingGuestId) {
+        localStorage.setItem(guestStorageKey, guestId);
+      }
 
       currentUserRef.current = {
-        id: user.id,
-        username: user.email?.split("@")[0] || "Anonymous",
+        id: guestId,
+        username: `Guest-${guestId.slice(-4)}`,
       };
     };
 
@@ -90,7 +110,7 @@ export const useCursors = (
 
   // Broadcast local pointer movement as a lightweight fallback for non-typing collaboration cues.
   useEffect(() => {
-    if (!documentId || !editorDomRef.current || !channelRef.current) return;
+    if (!documentId || !editorDomRef.current) return;
 
     const editorDom = editorDomRef.current;
 
@@ -108,7 +128,7 @@ export const useCursors = (
     return () => {
       editorDom.removeEventListener("mousemove", handleMouseMove);
     };
-  }, [documentId, editorDomRef, debouncedMouseBroadcast, channelRef.current]);
+  }, [documentId, editorDomRef, debouncedMouseBroadcast]);
 
   // Supabase channel setup - use useRef to avoid unnecessary re-subscriptions
   useEffect(() => {
