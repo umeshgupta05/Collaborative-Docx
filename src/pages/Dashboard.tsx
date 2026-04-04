@@ -624,7 +624,8 @@ const Dashboard = () => {
           <DialogHeader>
             <DialogTitle>Create New Document</DialogTitle>
             <DialogDescription>
-              Enter a name or leave it blank to auto-create an untitled document.
+              Enter a name or leave it blank to auto-create an untitled
+              document.
             </DialogDescription>
           </DialogHeader>
 

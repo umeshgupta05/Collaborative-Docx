@@ -116,9 +116,7 @@ const Index = () => {
                 <DropdownMenuItem onSelect={() => navigate("/download")}>
                   Download by Code
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => navigate("/download-folder")}
-                >
+                <DropdownMenuItem onSelect={() => navigate("/download-folder")}>
                   Folder Download
                 </DropdownMenuItem>
               </DropdownMenuContent>

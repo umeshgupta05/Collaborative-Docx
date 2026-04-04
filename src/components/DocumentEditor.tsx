@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
+import type { Editor as TiptapEditor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import TextAlign from "@tiptap/extension-text-align";
@@ -78,6 +79,42 @@ const DocumentEditor = ({
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
 
+  const { cursors, broadcastCursorPosition } = useCursors(
+    documentId,
+    editorRef,
+  );
+
+  const broadcastCaretFromEditor = useCallback(
+    (instance: TiptapEditor) => {
+      if (!editorRef.current) return;
+
+      const selectionPos = instance.state.selection.to;
+      const maxPos = Math.max(1, instance.state.doc.content.size);
+      const resolvedPos = Math.min(Math.max(1, selectionPos), maxPos);
+
+      try {
+        const coords = instance.view.coordsAtPos(resolvedPos);
+        const containerRect = editorRef.current.getBoundingClientRect();
+
+        broadcastCursorPosition({
+          top: coords.top - containerRect.top,
+          left: coords.left - containerRect.left,
+        });
+      } catch {
+        // Ignore invalid coordinates for transient document states.
+      }
+    },
+    [broadcastCursorPosition],
+  );
+
+  const debouncedBroadcastCaret = useMemo(
+    () =>
+      debounce((instance: TiptapEditor) => {
+        broadcastCaretFromEditor(instance);
+      }, 28),
+    [broadcastCaretFromEditor],
+  );
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -132,11 +169,14 @@ const DocumentEditor = ({
       setLocalContent(newContent);
       versionRef.current += 1;
       debouncedBroadcast(newContent, versionRef.current);
+      debouncedBroadcastCaret(editor);
       debouncedSave(newContent);
     },
+    onSelectionUpdate: ({ editor }) => {
+      if (isRemoteUpdateRef.current) return;
+      debouncedBroadcastCaret(editor);
+    },
   });
-
-  const { cursors } = useCursors(documentId, editorRef);
 
   // Debounced broadcast for real-time sync (fast - 80ms)
   const debouncedBroadcast = useMemo(
@@ -223,11 +263,18 @@ const DocumentEditor = ({
 
     return () => {
       debouncedBroadcast.cancel();
+      debouncedBroadcastCaret.cancel();
       debouncedSave.cancel();
       channel.unsubscribe();
       channelRef.current = null;
     };
-  }, [documentId, editor, debouncedBroadcast, debouncedSave]);
+  }, [
+    documentId,
+    editor,
+    debouncedBroadcast,
+    debouncedBroadcastCaret,
+    debouncedSave,
+  ]);
 
   // Sync from parent content prop (initial load / external save)
   useEffect(() => {
@@ -270,6 +317,12 @@ const DocumentEditor = ({
       setTimeout(() => editor.commands.focus("end"), 80);
     }
   }, [editor]);
+
+  useEffect(() => {
+    return () => {
+      debouncedBroadcastCaret.cancel();
+    };
+  }, [debouncedBroadcastCaret]);
 
   // Keyboard shortcuts
   useEffect(() => {
