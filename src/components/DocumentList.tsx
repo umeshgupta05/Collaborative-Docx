@@ -20,6 +20,16 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { format } from "date-fns";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -28,6 +38,7 @@ import {
   FileText,
   Clock,
   FolderInput,
+  MoreHorizontal,
   Pencil,
   Search,
   Trash2,
@@ -866,18 +877,105 @@ const DocumentList = ({
                                   <RotateCcw className="h-3.5 w-3.5" />
                                 </Button>
                               ) : (
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    softDeleteDocument.mutate(doc.id);
-                                  }}
-                                  aria-label="Move to trash"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
+                                <>
+                                  {isOwned && (
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                                          onClick={(e) => e.stopPropagation()}
+                                          aria-label="More actions"
+                                        >
+                                          <MoreHorizontal className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent
+                                        align="end"
+                                        className="w-52"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <DropdownMenuItem
+                                          onSelect={(e) => {
+                                            e.preventDefault();
+                                            startInlineRename(doc);
+                                          }}
+                                        >
+                                          <Pencil className="h-4 w-4 mr-2" />
+                                          Rename
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuSub>
+                                          <DropdownMenuSubTrigger>
+                                            <FolderInput className="h-4 w-4 mr-2" />
+                                            Move to
+                                          </DropdownMenuSubTrigger>
+                                          <DropdownMenuSubContent className="w-48">
+                                            {folderTargets.map((target) => (
+                                              <DropdownMenuItem
+                                                key={`dd-move-${doc.id}-${target.id || "unfiled"}`}
+                                                onSelect={() =>
+                                                  moveDocumentToFolder.mutate({
+                                                    documentId: doc.id,
+                                                    folderId: target.id,
+                                                  })
+                                                }
+                                              >
+                                                {target.name}
+                                              </DropdownMenuItem>
+                                            ))}
+                                          </DropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                        <DropdownMenuSub>
+                                          <DropdownMenuSubTrigger>
+                                            <Copy className="h-4 w-4 mr-2" />
+                                            Copy to
+                                          </DropdownMenuSubTrigger>
+                                          <DropdownMenuSubContent className="w-48">
+                                            {folderTargets.map((target) => (
+                                              <DropdownMenuItem
+                                                key={`dd-copy-${doc.id}-${target.id || "unfiled"}`}
+                                                onSelect={() =>
+                                                  copyDocumentToFolder.mutate({
+                                                    document: doc,
+                                                    folderId: target.id,
+                                                  })
+                                                }
+                                              >
+                                                {target.name}
+                                              </DropdownMenuItem>
+                                            ))}
+                                          </DropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                          className="text-destructive focus:text-destructive"
+                                          onSelect={() =>
+                                            softDeleteDocument.mutate(doc.id)
+                                          }
+                                        >
+                                          <Trash2 className="h-4 w-4 mr-2" />
+                                          Move to trash
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  )}
+                                  {!isOwned && (
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        softDeleteDocument.mutate(doc.id);
+                                      }}
+                                      aria-label="Move to trash"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  )}
+                                </>
                               )}
                             </div>
                           </div>
@@ -1180,18 +1278,105 @@ const DocumentList = ({
                             <RotateCcw className="h-3.5 w-3.5" />
                           </Button>
                         ) : (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              softDeleteDocument.mutate(doc.id);
-                            }}
-                            aria-label="Move to trash"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <>
+                            {isOwned && (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                                    onClick={(e) => e.stopPropagation()}
+                                    aria-label="More actions"
+                                  >
+                                    <MoreHorizontal className="h-3.5 w-3.5" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="end"
+                                  className="w-52"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <DropdownMenuItem
+                                    onSelect={(e) => {
+                                      e.preventDefault();
+                                      startInlineRename(doc);
+                                    }}
+                                  >
+                                    <Pencil className="h-4 w-4 mr-2" />
+                                    Rename
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuSub>
+                                    <DropdownMenuSubTrigger>
+                                      <FolderInput className="h-4 w-4 mr-2" />
+                                      Move to
+                                    </DropdownMenuSubTrigger>
+                                    <DropdownMenuSubContent className="w-48">
+                                      {folderTargets.map((target) => (
+                                        <DropdownMenuItem
+                                          key={`list-dd-move-${doc.id}-${target.id || "unfiled"}`}
+                                          onSelect={() =>
+                                            moveDocumentToFolder.mutate({
+                                              documentId: doc.id,
+                                              folderId: target.id,
+                                            })
+                                          }
+                                        >
+                                          {target.name}
+                                        </DropdownMenuItem>
+                                      ))}
+                                    </DropdownMenuSubContent>
+                                  </DropdownMenuSub>
+                                  <DropdownMenuSub>
+                                    <DropdownMenuSubTrigger>
+                                      <Copy className="h-4 w-4 mr-2" />
+                                      Copy to
+                                    </DropdownMenuSubTrigger>
+                                    <DropdownMenuSubContent className="w-48">
+                                      {folderTargets.map((target) => (
+                                        <DropdownMenuItem
+                                          key={`list-dd-copy-${doc.id}-${target.id || "unfiled"}`}
+                                          onSelect={() =>
+                                            copyDocumentToFolder.mutate({
+                                              document: doc,
+                                              folderId: target.id,
+                                            })
+                                          }
+                                        >
+                                          {target.name}
+                                        </DropdownMenuItem>
+                                      ))}
+                                    </DropdownMenuSubContent>
+                                  </DropdownMenuSub>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onSelect={() =>
+                                      softDeleteDocument.mutate(doc.id)
+                                    }
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Move to trash
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
+                            {!isOwned && (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  softDeleteDocument.mutate(doc.id);
+                                }}
+                                aria-label="Move to trash"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

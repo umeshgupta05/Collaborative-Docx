@@ -1,11 +1,12 @@
 # Collaborative Docx
 
-A premium collaborative document editor built for clarity, elegance, and real-time teamwork. Featuring rich typography, live cursors, version history, and a distraction-free writing experience.
+A premium collaborative document editor built for clarity, elegance, and real-time teamwork. Featuring CRDT-powered sync, Google Docs-style live cursors, version history, and a distraction-free writing experience.
 
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?logo=supabase&logoColor=white)
 ![TipTap](https://img.shields.io/badge/TipTap-2.11-1a1a2e)
+![Yjs](https://img.shields.io/badge/Yjs-CRDT-6C3FC5)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-06B6D4?logo=tailwindcss&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-5.4-646CFF?logo=vite&logoColor=white)
 
@@ -24,14 +25,18 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 - **Links** — Insert, edit, and remove hyperlinks with a popover UI
 - **Typography** — Smart quotes, em dashes, and typographic enhancements powered by TipTap
 
-### Collaboration
+### Real-Time Collaboration (Yjs CRDT)
 
-- **Real-Time Sync** — Content updates broadcast instantly via Supabase Realtime channels
-- **Live Cursors** — See collaborators' cursor positions in real time
-- **User Presence** — Active user avatars shown in the document header
+- **Conflict-Free Editing** — Powered by [Yjs](https://yjs.dev) CRDT — multiple users can type simultaneously with zero conflicts
+- **Google Docs-Style Cursors** — Inline colored carets with user name labels rendered directly in the text flow
+- **Incremental Binary Sync** — Only tiny binary diffs (~50–200 bytes) are transmitted per keystroke, not full HTML documents
+- **Per-User Undo/Redo** — Each collaborator has their own undo stack — undoing your changes won't undo someone else's
+- **User Presence** — Active user avatars with idle/active indicators shown in the document header
+- **Awareness Protocol** — Cursor positions and user identity synced via `y-protocols/awareness`
 - **Document Sharing** — Generate share links with view or edit permissions
 - **Password Protection** — Optionally password-protect shared documents
-- **Comments** — Thread-based commenting on documents
+- **Comments** — Thread-based commenting with real-time sync via Supabase postgres_changes
+- **Persistent State** — Yjs CRDT state stored as base64 in the database; HTML `content` column kept in sync for exports and legacy access
 
 ### Productivity
 
@@ -52,6 +57,7 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 
 - **Document Border Presets** — None, thin, medium, thick, and accent border styles
 - **Folders** — Create folders, filter documents by folder, and quickly create docs directly inside a folder
+- **Move & Copy** — Right-click context menu (desktop) or ⋯ dropdown button (mobile/touch) to move or copy documents between folders
 - **Version History** — Snapshots saved to database on manual save; preview, compare, and restore any version
 - **Export** — Download or copy as HTML, Markdown, Plain Text, or JSON
 - **Download by Code** — Generate a 6-character code per document and download it from `/download` on any device
@@ -79,29 +85,58 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 
 ## Tech Stack
 
-| Layer         | Technology                                   |
-| ------------- | -------------------------------------------- |
-| **Framework** | React 18.3 + TypeScript 5.5                  |
-| **Build**     | Vite 5.4 (SWC)                               |
-| **Editor**    | TipTap 2.11 with 17+ extensions              |
-| **Styling**   | Tailwind CSS 3.4 + Shadcn UI + Framer Motion |
-| **Backend**   | Supabase (Auth, PostgreSQL, Realtime, RLS)   |
-| **State**     | TanStack React Query 5                       |
-| **Routing**   | React Router 6                               |
-| **SEO**       | react-helmet-async                           |
-| **Charts**    | Recharts                                     |
+| Layer             | Technology                                    |
+| ----------------- | --------------------------------------------- |
+| **Framework**     | React 18.3 + TypeScript 5.5                   |
+| **Build**         | Vite 5.4 (SWC)                                |
+| **Editor**        | TipTap 2.11 with 17+ extensions               |
+| **Collaboration** | Yjs CRDT + y-prosemirror + y-protocols         |
+| **Styling**       | Tailwind CSS 3.4 + Shadcn UI + Framer Motion  |
+| **Backend**       | Supabase (Auth, PostgreSQL, Realtime, RLS)     |
+| **State**         | TanStack React Query 5                         |
+| **Routing**       | React Router 6                                 |
+| **SEO**           | react-helmet-async                             |
+| **Charts**        | Recharts                                       |
+
+---
+
+## Collaboration Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   User A's Browser                  │
+│  Tiptap Editor ←→ Y.Doc (CRDT) ←→ SupabaseProvider │
+│                                   ↕ Awareness       │
+└──────────────────────┬──────────────────────────────┘
+                       │ Supabase Realtime Broadcast
+                       │ • yjs-update (binary diffs)
+                       │ • yjs-awareness (cursors)
+                       │ • yjs-sync-request/response
+┌──────────────────────┴──────────────────────────────┐
+│                   User B's Browser                  │
+│  Tiptap Editor ←→ Y.Doc (CRDT) ←→ SupabaseProvider │
+│                                   ↕ Awareness       │
+└─────────────────────────────────────────────────────┘
+                       │
+                       ↓ Debounced persist (every 2s)
+              ┌────────────────┐
+              │  Supabase DB   │
+              │  yjs_state     │ ← base64 CRDT state
+              │  content       │ ← HTML for exports
+              └────────────────┘
+```
 
 ---
 
 ## Database Schema
 
 ```
-documents          — id, title, content, document_border_style, tags, deleted_at, created_by, status, parent_id, is_template
-comments           — id, document_id, content, created_by
-document_shares    — id, document_id, share_token, permission_level, password_hash
-document_versions  — id, document_id, content, word_count, char_count, created_by
+documents             — id, title, content, yjs_state, document_border_style, tags, folder_id, deleted_at, created_by, status, parent_id, is_template
+comments              — id, document_id, content, created_by
+document_shares       — id, document_id, share_token, permission_level, password_hash
+document_versions     — id, document_id, content, word_count, char_count, created_by
 document_download_codes — id, document_id, code, created_by, expires_at
-folders            — id, name, created_by, created_at, updated_at
+folders               — id, name, created_by, created_at, updated_at
 folder_download_codes — id, folder_id, code, created_by, expires_at
 ```
 
@@ -120,7 +155,7 @@ All tables use **Row Level Security (RLS)** — users can only access their own 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/Collaborative-Docx.git
+git clone https://github.com/umeshgupta05/Collaborative-Docx.git
 cd Collaborative-Docx
 ```
 
@@ -158,6 +193,7 @@ Option B — Run the migration SQL files manually in the [Supabase SQL Editor](h
 - `supabase/migrations/20260330113000_add_document_download_codes.sql`
 - `supabase/migrations/20260330124500_enforce_24h_download_code_expiry.sql`
 - `supabase/migrations/20260331090000_add_folders_and_folder_download_codes.sql`
+- `supabase/migrations/20260404060000_add_yjs_state_column.sql`
 
 ### 4.1 Configure Google OAuth (optional)
 
@@ -189,11 +225,11 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 src/
 ├── components/
 │   ├── ui/              # Shadcn UI primitives
-│   ├── DocumentEditor   # Core TipTap editor with toolbar and status bar
+│   ├── DocumentEditor   # Core TipTap editor with Yjs collaboration
 │   ├── EditorToolbar    # Formatting buttons and panel toggles
 │   ├── EditorStatusBar  # Word count, timer, mode indicators
-│   ├── Comments         # Document commenting
-│   ├── DocumentList     # Dashboard document grid
+│   ├── Comments         # Real-time document commenting
+│   ├── DocumentList     # Dashboard document grid with context+dropdown menus
 │   ├── DocumentShareDialog
 │   ├── ExportDocument   # Multi-format export
 │   ├── FindReplace      # Search and replace
@@ -204,22 +240,25 @@ src/
 │   ├── WordFrequency    # Word usage analytics
 │   ├── WritingGoals     # Word count goal tracking
 │   ├── DocumentOutline  # Heading-based navigation
-│   ├── RemoteCursors    # Real-time cursor rendering
 │   ├── PomodoroTimer    # Focus timer
 │   └── SEO              # Dynamic meta tags
+├── lib/
+│   └── SupabaseProvider # Custom Yjs provider over Supabase Realtime
+├── styles/
+│   └── collaboration-cursors.css # Google Docs-style cursor CSS
 ├── pages/
 │   ├── Index            # Landing page
 │   ├── Auth             # Sign in / Sign up
 │   ├── Dashboard        # Document management
-│   ├── Document         # Editor view
-│   ├── SharedDocument   # Shared document view
+│   ├── Document         # Editor view (creates Y.Doc + provider)
+│   ├── SharedDocument   # Shared document view (Yjs-enabled)
 │   ├── DownloadByCode   # Code-based document download page
 │   ├── DownloadFolderByCode # Folder-code based zip download page
 │   └── NotFound         # 404
 ├── hooks/               # Custom React hooks
-├── utils/               # Helpers (cursor, password, version)
-├── integrations/        # Supabase client and types
-└── lib/                 # Utility functions
+├── utils/               # Helpers (password, version)
+├── extensions/          # Custom TipTap extensions (line-height)
+└── integrations/        # Supabase client and types
 ```
 
 ---
@@ -246,8 +285,8 @@ src/
 | `Ctrl+I`       | Italic                         |
 | `Ctrl+U`       | Underline                      |
 | `Ctrl+Shift+X` | Strikethrough                  |
-| `Ctrl+Z`       | Undo                           |
-| `Ctrl+Shift+Z` | Redo                           |
+| `Ctrl+Z`       | Undo (per-user with Yjs)       |
+| `Ctrl+Shift+Z` | Redo (per-user with Yjs)       |
 | `Escape`       | Exit Zen Mode                  |
 
 ---
