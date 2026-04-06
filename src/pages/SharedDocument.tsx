@@ -92,8 +92,8 @@ const SharedDocument = () => {
   const hasHydratedRef = useRef(false);
 
   // ── Yjs ──
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<SupabaseProvider | null>(null);
+  const [ydoc] = useState<Y.Doc>(() => new Y.Doc());
+  const [provider, setProvider] = useState<SupabaseProvider | null>(null);
 
   // Check if user is authenticated
   useEffect(() => {
@@ -154,17 +154,16 @@ const SharedDocument = () => {
 
   // ── Create Yjs provider once we have the document ID ──
   useEffect(() => {
-    if (!documentId || providerRef.current) return;
+    if (!documentId || !ydoc) return;
 
-    ydocRef.current = new Y.Doc();
-    providerRef.current = new SupabaseProvider(documentId, ydocRef.current);
+    const p = new SupabaseProvider(documentId, ydoc);
+    setProvider(p);
 
     return () => {
-      providerRef.current?.destroy();
-      providerRef.current = null;
-      ydocRef.current = null;
+      p.destroy();
+      setProvider(null);
     };
-  }, [documentId]);
+  }, [documentId, ydoc]);
 
   // ── Presence channel ──
   useEffect(() => {
@@ -455,7 +454,7 @@ const SharedDocument = () => {
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-8">
         <div className="lg:col-span-2 min-w-0">
-          {documentId && ydocRef.current && providerRef.current && (
+          {documentId && ydoc && provider && (
             <DocumentEditor
               content={content}
               onUpdate={handleContentUpdate}
@@ -463,8 +462,8 @@ const SharedDocument = () => {
               isReadOnly={permissionLevel !== "edit"}
               initialDocumentBorderStyle={documentBorderStyle}
               onDocumentBorderStyleChange={setDocumentBorderStyle}
-              ydoc={ydocRef.current}
-              provider={providerRef.current}
+              ydoc={ydoc}
+              provider={provider}
               userName={userName}
             />
           )}

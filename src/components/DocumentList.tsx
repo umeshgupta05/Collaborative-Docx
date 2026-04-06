@@ -179,11 +179,14 @@ const DocumentList = ({
   };
 
   const { data: documents, isLoading } = useQuery({
-    queryKey: ["documents", showTrash, folderFilter],
+    queryKey: ["documents", showTrash, folderFilter, currentUserId],
     queryFn: async () => {
+      if (!currentUserId) return [];
+
       const query = supabase
         .from("documents")
         .select("*")
+        .eq("created_by", currentUserId)
         .order("updated_at", { ascending: false });
 
       if (showTrash) {
@@ -202,6 +205,7 @@ const DocumentList = ({
       if (error) throw error;
       return data;
     },
+    enabled: !!currentUserId,
   });
 
   const { data: folders } = useQuery({

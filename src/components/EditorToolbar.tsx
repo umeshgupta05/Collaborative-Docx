@@ -47,6 +47,8 @@ import {
   Download,
   BarChart3,
   History,
+  Image as ImageIcon,
+  Video,
 } from "lucide-react";
 import TableInsert from "./TableInsert";
 import LinkInsert from "./LinkInsert";
@@ -67,6 +69,8 @@ interface EditorToolbarProps {
   onToggleExport: () => void;
   onToggleWordFrequency: () => void;
   onToggleVersionHistory: () => void;
+  onInsertImage: () => void;
+  onInsertVideo: () => void;
 }
 
 const ToolbarButton = memo(
@@ -129,6 +133,8 @@ const EditorToolbar: React.FC<EditorToolbarProps> = ({
   onToggleExport,
   onToggleWordFrequency,
   onToggleVersionHistory,
+  onInsertImage,
+  onInsertVideo,
 }) => {
   if (!editor) return null;
 
@@ -581,6 +587,18 @@ const EditorToolbar: React.FC<EditorToolbarProps> = ({
         />
         <LinkInsert editor={editor} />
         <TableInsert editor={editor} />
+        <ToolbarButton
+          icon={<ImageIcon className="h-3.5 w-3.5" />}
+          title="Upload Image"
+          action={onInsertImage}
+          isActive={false}
+        />
+        <ToolbarButton
+          icon={<Video className="h-3.5 w-3.5" />}
+          title="Upload Video"
+          action={onInsertVideo}
+          isActive={false}
+        />
         <ToolbarButton
           icon={<Download className="h-3.5 w-3.5" />}
           title="Export"

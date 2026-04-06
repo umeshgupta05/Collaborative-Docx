@@ -53,13 +53,9 @@ const Document = () => {
 
   const hasHydratedRef = useRef(false);
 
-  // ── Yjs document & provider (stable for the lifetime of this page) ──
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<SupabaseProvider | null>(null);
-
-  if (!ydocRef.current && id) {
-    ydocRef.current = new Y.Doc();
-  }
+  // ── Yjs document & provider (state so setting them triggers re-render) ──
+  const [ydoc] = useState<Y.Doc>(() => new Y.Doc());
+  const [provider, setProvider] = useState<SupabaseProvider | null>(null);
 
   // Wait for auth session
   useEffect(() => {
@@ -119,18 +115,16 @@ const Document = () => {
 
   // ── Create SupabaseProvider once the doc ID is stable ──
   useEffect(() => {
-    if (!id || !ydocRef.current) return;
+    if (!id || !ydoc) return;
 
-    // Don't recreate if already exists for this doc
-    if (providerRef.current) return;
-
-    providerRef.current = new SupabaseProvider(id, ydocRef.current);
+    const p = new SupabaseProvider(id, ydoc);
+    setProvider(p);
 
     return () => {
-      providerRef.current?.destroy();
-      providerRef.current = null;
+      p.destroy();
+      setProvider(null);
     };
-  }, [id]);
+  }, [id, ydoc]);
 
   // ── Presence channel (user avatars in header) ──
   useEffect(() => {
@@ -452,15 +446,15 @@ const Document = () => {
       >
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 sm:gap-8 max-w-6xl mx-auto">
           <div className="min-w-0">
-            {ydocRef.current && providerRef.current && (
+            {ydoc && provider && (
               <DocumentEditor
                 content={content}
                 onUpdate={setContent}
                 documentId={id!}
                 initialDocumentBorderStyle={documentBorderStyle}
                 onDocumentBorderStyleChange={setDocumentBorderStyle}
-                ydoc={ydocRef.current}
-                provider={providerRef.current}
+                ydoc={ydoc}
+                provider={provider}
                 userName={userName}
               />
             )}

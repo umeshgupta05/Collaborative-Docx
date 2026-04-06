@@ -24,6 +24,9 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 - **Tables** — Insert and edit tables with configurable rows, columns, and header rows
 - **Links** — Insert, edit, and remove hyperlinks with a popover UI
 - **Typography** — Smart quotes, em dashes, and typographic enhancements powered by TipTap
+- **Media Embeds** — Upload images and videos directly into documents from the toolbar
+- **Image Paste** — Paste images from clipboard directly into the editor
+- **Secure Media URLs** — Uploaded media can use signed Supabase Storage URLs with automatic refresh before expiry
 
 ### Real-Time Collaboration (Yjs CRDT)
 
@@ -93,6 +96,7 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 | **Collaboration** | Yjs CRDT + y-prosemirror + y-protocols         |
 | **Styling**       | Tailwind CSS 3.4 + Shadcn UI + Framer Motion  |
 | **Backend**       | Supabase (Auth, PostgreSQL, Realtime, RLS)     |
+| **Storage**       | Supabase Storage (document media uploads)       |
 | **State**         | TanStack React Query 5                         |
 | **Routing**       | React Router 6                                 |
 | **SEO**           | react-helmet-async                             |
@@ -172,7 +176,21 @@ Create a `.env` file in the project root:
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=your-anon-key
+# Optional: set to false to force public media URLs instead of signed URLs
+VITE_MEDIA_USE_SIGNED_URLS=true
 ```
+
+### 3.1 Create Storage bucket for editor media
+
+Create a Supabase Storage bucket named `document-media`.
+
+Recommended setup:
+
+- Private bucket (preferred for sensitive docs)
+- Add storage policies that allow authenticated collaborators to upload/read objects
+- If using private bucket, keep `VITE_MEDIA_USE_SIGNED_URLS=true` for signed delivery URLs
+
+If you use a public bucket, the editor will still work via public URL fallback.
 
 ### 4. Set up the database
 
@@ -236,6 +254,7 @@ src/
 │   ├── KeyboardShortcuts
 │   ├── LinkInsert       # Hyperlink popover
 │   ├── TableInsert      # Table configuration dialog
+│   ├── Media upload      # Image/video upload buttons in toolbar
 │   ├── VersionHistory   # Database-backed version snapshots
 │   ├── WordFrequency    # Word usage analytics
 │   ├── WritingGoals     # Word count goal tracking
@@ -258,6 +277,7 @@ src/
 ├── hooks/               # Custom React hooks
 ├── utils/               # Helpers (password, version)
 ├── extensions/          # Custom TipTap extensions (line-height)
+│   └── video.ts          # Custom TipTap video node
 └── integrations/        # Supabase client and types
 ```
 
