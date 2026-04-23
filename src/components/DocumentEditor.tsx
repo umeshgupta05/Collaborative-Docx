@@ -418,35 +418,52 @@ const DocumentEditor = ({
   }, [debouncedPersist]);
 
   // If the Yjs document is empty (new doc or first migration), seed it
-  // with the HTML content from the DB
+  // with the HTML content from the DB.
+  // IMPORTANT: We must wait for the provider to finish loading any persisted
+  // Yjs state from the database before checking emptiness. Otherwise we race
+  // against loadFromDB() and end up seeding HTML into a doc that will also
+  // receive the persisted Yjs state — causing duplication.
   useEffect(() => {
     if (!editor || hasSetInitialContent.current) return;
 
-    // Check if the Yjs document is empty
-    const yXmlFragment = ydoc.getXmlFragment("default");
-    const isEmpty = yXmlFragment.length === 0;
+    let canceled = false;
 
-    if (isEmpty && content && content !== "<p></p>") {
-      // Seed the Yjs document with existing HTML content
-      editor.commands.setContent(content, false);
+    provider.whenSynced.then(() => {
+      if (canceled || hasSetInitialContent.current) return;
+
+      // Check if the Yjs document is empty AFTER the DB state has been applied
+      const yXmlFragment = ydoc.getXmlFragment("default");
+      const isEmpty = yXmlFragment.length === 0;
+
+      if (isEmpty && content && content !== "<p></p>") {
+        // Seed the Yjs document with existing HTML content
+        editor.commands.setContent(content, false);
+      }
+
       hasSetInitialContent.current = true;
-    } else {
-      hasSetInitialContent.current = true;
-    }
-  }, [editor, content, ydoc]);
+    });
+
+    return () => {
+      canceled = true;
+    };
+  }, [editor, content, ydoc, provider]);
 
   useEffect(() => {
     if (!editor || !USE_SIGNED_MEDIA_URLS || hasRefreshedMediaUrlsRef.current)
       return;
 
-    // Wait until initial content seeding is complete to avoid race conditions
-    // that duplicate content when setContent is called multiple times.
-    if (!hasSetInitialContent.current) return;
-
     hasRefreshedMediaUrlsRef.current = true;
     let canceled = false;
 
     const refreshMediaLinks = async () => {
+      // Wait until the DB state is loaded and any HTML seeding is done
+      await provider.whenSynced;
+      if (canceled) return;
+
+      // Give a tick for the initial content seeding to complete
+      await new Promise((r) => setTimeout(r, 100));
+      if (canceled) return;
+
       const currentHtml = editor.getHTML();
       const parser = new DOMParser();
       const doc = parser.parseFromString(currentHtml, "text/html");
@@ -456,7 +473,8 @@ const DocumentEditor = ({
 
       if (mediaNodes.length === 0) return;
 
-      let hasChanges = false;
+      // Build a map of old-src → new-src for URLs that need refreshing
+      const urlUpdates = new Map<string, string>();
 
       for (const node of mediaNodes) {
         const src = node.getAttribute("src");
@@ -471,21 +489,33 @@ const DocumentEditor = ({
 
         if (error || !signedData?.signedUrl) continue;
 
-        node.setAttribute(
-          "src",
-          withMediaPathHint(signedData.signedUrl, mediaPath),
-        );
-        hasChanges = true;
+        urlUpdates.set(src, withMediaPathHint(signedData.signedUrl, mediaPath));
       }
 
-      if (!hasChanges || canceled) return;
+      if (urlUpdates.size === 0 || canceled) return;
 
-      const refreshedHtml = doc.body.innerHTML;
-      if (!refreshedHtml || refreshedHtml === currentHtml) return;
-
-      editor.commands.setContent(refreshedHtml, false);
-      setLocalContent(refreshedHtml);
-      debouncedPersist(refreshedHtml);
+      // Update image/video nodes individually through the editor's Yjs-aware
+      // transaction rather than calling setContent() which replaces everything.
+      editor.view.state.doc.descendants((node, pos) => {
+        if (
+          (node.type.name === "image" || node.type.name === "video") &&
+          node.attrs.src
+        ) {
+          const newSrc = urlUpdates.get(node.attrs.src);
+          if (newSrc) {
+            editor
+              .chain()
+              .command(({ tr }) => {
+                tr.setNodeMarkup(pos, undefined, {
+                  ...node.attrs,
+                  src: newSrc,
+                });
+                return true;
+              })
+              .run();
+          }
+        }
+      });
     };
 
     refreshMediaLinks();
@@ -497,6 +527,7 @@ const DocumentEditor = ({
     debouncedPersist,
     editor,
     getSupabaseMediaPath,
+    provider,
     shouldRefreshSignedUrl,
     withMediaPathHint,
   ]);

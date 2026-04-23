@@ -46,16 +46,28 @@ export class SupabaseProvider {
   awareness: Awareness;
   documentId: string;
 
+  /**
+   * Resolves once the persisted Yjs state (if any) has been loaded from the
+   * database. Consumers should `await` this before checking whether the Yjs
+   * document is empty and needs HTML seeding.
+   */
+  whenSynced: Promise<void>;
+
   private channel: ReturnType<typeof supabase.channel> | null = null;
   private isConnected = false;
   private isSynced = false;
   private isDestroyed = false;
   private pendingUpdates: Uint8Array[] = [];
+  private resolveSynced!: () => void;
 
   constructor(documentId: string, doc: Y.Doc) {
     this.documentId = documentId;
     this.doc = doc;
     this.awareness = new Awareness(doc);
+
+    this.whenSynced = new Promise<void>((resolve) => {
+      this.resolveSynced = resolve;
+    });
 
     this.connect();
   }
@@ -65,6 +77,7 @@ export class SupabaseProvider {
 
     // 1. Load persisted state from DB
     await this.loadFromDB();
+    this.resolveSynced();
 
     if (this.isDestroyed) return;
 
