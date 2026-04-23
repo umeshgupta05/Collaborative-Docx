@@ -56,10 +56,35 @@ const ResizableImage = Node.create<ResizableImageOptions>({
   parseHTML() {
     return [
       {
+        // Match the <figure> wrapper produced by renderHTML so the entire
+        // figure is consumed as a single image node (prevents duplication).
+        tag: 'figure[data-type="resizable-image"]',
+        contentElement: "figcaption",
+        getAttrs: (dom) => {
+          const figure = dom as HTMLElement;
+          const img = figure.querySelector("img");
+          if (!img) return false;
+
+          let alignment = "center";
+          const textAlign = figure.style.textAlign;
+          if (textAlign === "left" || textAlign === "right" || textAlign === "center") {
+            alignment = textAlign;
+          }
+
+          return {
+            src: img.getAttribute("src"),
+            alt: img.getAttribute("alt"),
+            title: img.getAttribute("title"),
+            width: img.style.width || img.getAttribute("width") || null,
+            alignment,
+          };
+        },
+      },
+      {
+        // Fallback: match a bare <img> (e.g. pasted content)
         tag: "img[src]",
         getAttrs: (dom) => {
           const element = dom as HTMLElement;
-          // Try to get alignment from parent figure or the img style
           let alignment = "center";
           const parent = element.parentElement;
           if (parent?.tagName === "FIGURE") {

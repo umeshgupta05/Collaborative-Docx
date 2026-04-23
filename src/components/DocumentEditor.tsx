@@ -439,6 +439,10 @@ const DocumentEditor = ({
     if (!editor || !USE_SIGNED_MEDIA_URLS || hasRefreshedMediaUrlsRef.current)
       return;
 
+    // Wait until initial content seeding is complete to avoid race conditions
+    // that duplicate content when setContent is called multiple times.
+    if (!hasSetInitialContent.current) return;
+
     hasRefreshedMediaUrlsRef.current = true;
     let canceled = false;
 
