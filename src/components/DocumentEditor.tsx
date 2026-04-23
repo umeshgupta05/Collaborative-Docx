@@ -33,11 +33,12 @@ import KeyboardShortcuts from "./KeyboardShortcuts";
 import WordFrequency from "./WordFrequency";
 import VersionHistory from "./VersionHistory";
 import LineHeight from "@/extensions/line-height";
-import Image from "@tiptap/extension-image";
+import ResizableImage from "@/extensions/resizable-image";
 import Video from "@/extensions/video";
 import { supabase } from "@/integrations/supabase/client";
 import type { SupabaseProvider } from "@/lib/SupabaseProvider";
 import "@/styles/collaboration-cursors.css";
+import "@/styles/image-editing.css";
 
 type DocumentBorderStyle = "none" | "thin" | "medium" | "thick" | "accent";
 
@@ -305,7 +306,7 @@ const DocumentEditor = ({
       TableRow,
       TableCell,
       TableHeader,
-      Image.configure({
+      ResizableImage.configure({
         inline: false,
         allowBase64: true,
       }),

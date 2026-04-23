@@ -88,19 +88,19 @@ A premium collaborative document editor built for clarity, elegance, and real-ti
 
 ## Tech Stack
 
-| Layer             | Technology                                    |
-| ----------------- | --------------------------------------------- |
-| **Framework**     | React 18.3 + TypeScript 5.5                   |
-| **Build**         | Vite 5.4 (SWC)                                |
-| **Editor**        | TipTap 2.11 with 17+ extensions               |
-| **Collaboration** | Yjs CRDT + y-prosemirror + y-protocols         |
-| **Styling**       | Tailwind CSS 3.4 + Shadcn UI + Framer Motion  |
-| **Backend**       | Supabase (Auth, PostgreSQL, Realtime, RLS)     |
-| **Storage**       | Supabase Storage (document media uploads)       |
-| **State**         | TanStack React Query 5                         |
-| **Routing**       | React Router 6                                 |
-| **SEO**           | react-helmet-async                             |
-| **Charts**        | Recharts                                       |
+| Layer             | Technology                                   |
+| ----------------- | -------------------------------------------- |
+| **Framework**     | React 18.3 + TypeScript 5.5                  |
+| **Build**         | Vite 5.4 (SWC)                               |
+| **Editor**        | TipTap 2.11 with 17+ extensions              |
+| **Collaboration** | Yjs CRDT + y-prosemirror + y-protocols       |
+| **Styling**       | Tailwind CSS 3.4 + Shadcn UI + Framer Motion |
+| **Backend**       | Supabase (Auth, PostgreSQL, Realtime, RLS)   |
+| **Storage**       | Supabase Storage (document media uploads)    |
+| **State**         | TanStack React Query 5                       |
+| **Routing**       | React Router 6                               |
+| **SEO**           | react-helmet-async                           |
+| **Charts**        | Recharts                                     |
 
 ---
 
